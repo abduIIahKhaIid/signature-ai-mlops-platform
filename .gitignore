@@ -33,3 +33,9 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# SSH / private keys: never in git
+keys/
+*.pem
+*.ppk
+id_rsa*
