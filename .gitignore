@@ -6,6 +6,7 @@ Dataset/
 *.pth
 *.onnx
 *.safetensors
+keys/
 
 # Dataset dashboard: local working data (imports, exports, trash, history) and npm packages
 .signature-dashboard/
