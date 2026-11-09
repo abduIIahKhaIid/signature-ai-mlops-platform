@@ -4,4 +4,4 @@ celery[redis]>=5.4,<6
 boto3>=1.34
 pillow>=10
 transformers>=4.50,<5
-logfire[celery,redis]>=3
+logfire[celery,redis,system-metrics]>=3

@@ -36,10 +36,15 @@ def setup(role: str) -> None:
         service_name=f"{settings.service_name}-{role}",
         environment=settings.environment,
         send_to_logfire="if-token-present",
+        console=False,  # stdout already has our log lines; avoid printing everything twice
     )
     logging.getLogger().addHandler(logfire.LogfireLoggingHandler())
     logfire.instrument_celery()
     logfire.instrument_redis()
+    try:  # CPU %, memory, swap of the container -> Logfire "Basic System Metrics" dashboard
+        logfire.instrument_system_metrics(base="basic")
+    except Exception as exc:  # optional extra not installed
+        log.warning("system metrics disabled: %s", exc)
     _logfire = logfire
     log.info("Logfire enabled for %s", role)
 
