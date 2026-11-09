@@ -64,7 +64,8 @@ def _png(seed=0):
 
 
 def test_health(stack):
-    assert stack["client"].get("/health").json()["status"] == "ok"
+    body = stack["client"].get("/health").json()
+    assert body["status"] == "ok" and body["version"] == "dev"
 
 
 def test_ready_reports_worker(stack):

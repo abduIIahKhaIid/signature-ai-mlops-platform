@@ -15,6 +15,8 @@ when the Hugging Face dataset changes. Experiments are tracked in **Comet**, mod
 | `signature_service/` | Inference service: FastAPI API, Celery workers, Redis, Docker Compose, EC2 deploy, Locust load test, tests |
 | `pipeline/` | Automated retraining: Kaggle notebook (`train_pipeline.ipynb`), job script, setup guide |
 | `.github/workflows/retrain.yml` | GitHub Actions orchestrator for retraining (HF webhook / schedule / manual) |
+| `.github/workflows/ci-cd.yml` | CI (tests, checks, Docker builds) + CD to EC2 via AWS SSM: [`signature_service/deploy/CI_CD.md`](signature_service/deploy/CI_CD.md) |
+| `docs/` | Measured results per phase (EC2 queue tests, similarity evaluation, …) |
 
 **Not in git (by design):** datasets (`Dataset/`, on Hugging Face), model weights (S3), `.env` files and keys,
 dashboard working data (`.signature-dashboard/`), `node_modules/`.

@@ -1,0 +1,211 @@
+name: CI/CD
+
+# CI on every push / pull request: tests, static checks, Docker builds.
+# CD on push to main: if signature_service/ changed and CI is green, deploy to EC2 through
+# AWS SSM Run Command (no SSH, no open port 22), then prove the new commit is live via /health.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: "Deploy even if signature_service/ did not change"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false   # never interrupt a running deploy
+
+permissions:
+  contents: read
+
+jobs:
+  service-tests:
+    name: Service tests (FastAPI + Celery + Redis + S3 registry)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: signature_service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: signature_service/requirements-*.txt
+      - name: Redis server for the end-to-end tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-server
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install -r requirements-dev.txt
+      - name: Static check (pyflakes)
+        run: python -m pyflakes app tests loadtest scripts
+      - name: Tests
+        run: python -m pytest -q
+
+  dashboard-tests:
+    name: Dataset dashboard tests (Node)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dataset_dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dataset_dashboard/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  pipeline-checks:
+    name: Retraining pipeline checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyflakes pyyaml
+      - name: train_pipeline.ipynb is up to date with the training notebook
+        run: |
+          python pipeline/make_pipeline_notebook.py notebooks/01_detection_training_colab.ipynb /tmp/train_pipeline.ipynb
+          if ! cmp -s /tmp/train_pipeline.ipynb pipeline/train_pipeline.ipynb; then
+            echo "::error::pipeline/train_pipeline.ipynb is stale. Run: python pipeline/make_pipeline_notebook.py notebooks/01_detection_training_colab.ipynb pipeline/train_pipeline.ipynb"
+            exit 1
+          fi
+      - name: Notebook code compiles and has no undefined names
+        run: |
+          python - <<'EOF'
+          import json
+          nb = json.load(open('pipeline/train_pipeline.ipynb'))
+          code = ['\n'.join(l for l in ''.join(c['source']).splitlines() if not l.lstrip().startswith(('%', '!')))
+                  for c in nb['cells'] if c['cell_type'] == 'code']
+          open('/tmp/pipeline_flat.py', 'w').write('\n\n'.join(code))
+          EOF
+          python -m pyflakes /tmp/pipeline_flat.py pipeline/kaggle_job.py pipeline/make_pipeline_notebook.py
+      - name: Kaggle job can be built (dry run)
+        run: python pipeline/kaggle_job.py build --kernel ci/signatureai-retrain --mode smoke --out /tmp/kaggle
+      - name: Workflow files are valid YAML
+        run: python -c "import glob, yaml; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]; print('ok')"
+
+  docker-build:
+    name: Docker images build
+    needs: service-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: API image
+        uses: docker/build-push-action@v6
+        with:
+          context: signature_service
+          file: signature_service/docker/api.Dockerfile
+          push: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - name: Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: signature_service
+          file: signature_service/docker/worker.Dockerfile
+          push: false
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+  deploy:
+    name: Deploy to EC2 (AWS SSM)
+    needs: [service-tests, dashboard-tests, pipeline-checks, docker-build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      API_URL: ${{ vars.API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Did the service change?
+        id: changes
+        run: |
+          BEFORE="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force_deploy }}" = "true" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; echo "forced deploy"; exit 0
+          fi
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BEFORE" 2>/dev/null; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"; echo "no previous commit to compare: deploy"; exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BEFORE" "${{ github.sha }}")"
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -q '^signature_service/'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "### Deploy skipped: no change under signature_service/" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Deploy secrets present?
+        id: ready
+        if: steps.changes.outputs.deploy == 'true'
+        env:
+          K: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -z "$K" ] || [ -z "$INSTANCE_ID" ] || [ -z "$AWS_REGION" ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CD not configured (DEPLOY_AWS_ACCESS_KEY_ID / DEPLOY_AWS_SECRET_ACCESS_KEY / EC2_INSTANCE_ID / AWS_REGION). See signature_service/deploy/CI_CD.md"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: AWS credentials (deploy-only IAM user)
+        if: steps.ready.outputs.ok == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Run deploy on the instance through SSM
+        id: ssm
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          SHA="${{ github.sha }}"
+          cat > /tmp/params.json <<EOF
+          {"commands": [
+            "set -e",
+            "sudo -u ubuntu git -C /home/ubuntu/app fetch --quiet origin main",
+            "sudo -u ubuntu git -C /home/ubuntu/app reset --hard ${SHA}",
+            "bash /home/ubuntu/app/signature_service/deploy/remote_deploy.sh ${SHA}"
+          ], "executionTimeout": ["1500"]}
+          EOF
+          CMD_ID="$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
+            --comment "deploy ${SHA::7} (run ${{ github.run_id }})" --parameters file:///tmp/params.json \
+            --query Command.CommandId --output text)"
+          echo "SSM command: $CMD_ID"
+          for i in $(seq 1 150); do
+            sleep 10
+            STATUS="$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)"
+            echo "$(date +%T) $STATUS"
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text | tail -40
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text | tail -40
+          if [ "$STATUS" != "Success" ]; then echo "::error::deploy failed on the instance ($STATUS)"; exit 1; fi
+
+      - name: Verify from outside (public URL)
+        if: steps.ready.outputs.ok == 'true' && env.API_URL != ''
+        run: |
+          HEALTH="$(curl -fsS --max-time 10 "$API_URL/health")"; echo "$HEALTH"
+          echo "$HEALTH" | grep -q "\"version\":\"${{ github.sha }}\"" || { echo "::error::live version is not ${{ github.sha }}"; exit 1; }
+          curl -fsS --max-time 10 "$API_URL/ready"
+          echo "### ✅ Deployed \`${GITHUB_SHA::7}\` to EC2 — $API_URL/health reports it" >> "$GITHUB_STEP_SUMMARY"

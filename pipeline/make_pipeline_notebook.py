@@ -60,6 +60,17 @@ AUTO_DEPLOY = False           # move the alias automatically when the gate passe
 DEPLOY_ALIAS = 'latest'       # alias the API workers follow (MODEL_ALIAS in their .env)
 GITHUB_RUN_URL = None
 print('Runtime:', RUNTIME_NAME)
+try:  # fail in seconds (not after 20 min of data prep) on GPUs the installed PyTorch cannot run, e.g. Kaggle P100 (sm_60)
+    import torch
+    if torch.cuda.is_available():
+        _cap = torch.cuda.get_device_capability(0)
+        _archs = torch.cuda.get_arch_list()
+        print('GPU:', torch.cuda.get_device_name(0), '| capability', _cap, '| torch', torch.__version__)
+        if _archs and f'sm_{_cap[0]}{_cap[1]}' not in _archs and _cap < (7, 0):
+            raise RuntimeError(f'{torch.cuda.get_device_name(0)} (sm_{_cap[0]}{_cap[1]}) is not supported by this PyTorch '
+                               f'build ({_archs}). On Kaggle use a T4: kaggle kernels push --accelerator NvidiaTeslaT4')
+except ImportError:
+    pass
 """
 
 OVERRIDE_PLACEHOLDER = """

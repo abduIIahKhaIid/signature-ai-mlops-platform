@@ -130,7 +130,7 @@ async def model():
 
 @app.get("/health", summary="Liveness: the API process is up")
 async def health():
-    return {"status": "ok", "uptime_seconds": round(time.time() - API_STARTED, 1)}
+    return {"status": "ok", "version": settings.app_version, "uptime_seconds": round(time.time() - API_STARTED, 1)}
 
 
 @app.get("/ready", summary="Readiness: Redis reachable and at least one worker online")

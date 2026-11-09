@@ -4,5 +4,6 @@ torch
 torchvision
 pytest>=8
 httpx>=0.27
-moto[s3]>=5
+moto[s3,server]>=5
 locust>=2.29
+pyflakes>=3
