@@ -1,0 +1,7 @@
+# Worker container. torch/torchvision are installed separately from the CPU wheel index
+# in docker/worker.Dockerfile (much smaller than the default CUDA build).
+celery[redis]>=5.4,<6
+boto3>=1.34
+pillow>=10
+transformers>=4.50,<5
+logfire[celery,redis]>=3

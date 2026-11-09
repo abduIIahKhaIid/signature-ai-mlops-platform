@@ -1,0 +1,32 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ListModelRegistry",
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Resource": "arn:aws:s3:::signatureai-df-detr-models",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": [
+                        "signatureai/detection/*",
+                        "signatureai/similarity/*"
+                    ]
+                }
+            }
+        },
+        {
+            "Sid": "ReadModels",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/*",
+                "arn:aws:s3:::signatureai-df-detr-models/signatureai/similarity/*"
+            ]
+        }
+    ]
+}

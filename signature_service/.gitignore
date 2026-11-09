@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+# model weights never go into git: they live in S3
+*.pt
+*.pth
+*.onnx
+*.safetensors
+models/
+loadtest/results/

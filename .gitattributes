@@ -1,0 +1,4 @@
+# Shell scripts must keep Linux line endings (EC2 / Docker run them)
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.Dockerfile text eol=lf

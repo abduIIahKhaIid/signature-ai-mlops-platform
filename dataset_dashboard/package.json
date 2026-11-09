@@ -1,0 +1,19 @@
+{
+  "name": "signature-dataset-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Bootstrap-based, memory-conscious YOLO/Roboflow dataset review and annotation dashboard",
+  "scripts": {
+    "analyze": "node scripts/analyze-datasets.mjs",
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@huggingface/hub": "^2.17.10",
+    "bootstrap": "5.3.3"
+  }
+}

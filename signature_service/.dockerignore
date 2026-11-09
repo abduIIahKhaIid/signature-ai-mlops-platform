@@ -1,0 +1,11 @@
+.env
+.git
+__pycache__
+.pytest_cache
+tests
+loadtest
+models
+*.pt
+*.pth
+*.onnx
+*.safetensors

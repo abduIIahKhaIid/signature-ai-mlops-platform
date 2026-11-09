@@ -1,0 +1,34 @@
+# ===================== never pushed to GitHub =====================
+# Datasets live on Hugging Face, trained models in Amazon S3
+Dataset/
+*.zip
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Dataset dashboard: local working data (imports, exports, trash, history) and npm packages
+.signature-dashboard/
+dataset_dashboard/node_modules/
+
+# Secrets (keys live in .env, Colab/Kaggle secrets, GitHub secrets, IAM roles)
+.env
+**/.env
+
+# Python / notebook caches and local run outputs
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+build/
+similarity_run/
+signature_service/loadtest/results/
+signature_service/loadtest/images/
+.copy-test-*/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

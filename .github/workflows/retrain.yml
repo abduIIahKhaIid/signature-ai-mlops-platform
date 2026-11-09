@@ -1,0 +1,114 @@
+name: Retrain signature detector
+
+# Triggers
+#  - repository_dispatch: sent by the API's /webhooks/huggingface endpoint when the HF dataset changes
+#  - schedule:            fallback watcher, every 30 min: trains only if HF main has a commit not trained yet
+#  - workflow_dispatch:   manual "Run workflow" button (demo / re-run)
+on:
+  repository_dispatch:
+    types: [hf-dataset-updated]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = 2k images, 1 epoch, warm start (~40 min) | full = whole dataset"
+        type: choice
+        options: [smoke, full]
+        default: smoke
+      hf_revision:
+        description: "Hugging Face dataset commit (blank = main)"
+        default: ""
+      deploy:
+        description: "Move the model alias if the validation gate passes"
+        type: boolean
+        default: true
+
+concurrency:
+  group: retrain-signature-detector
+  cancel-in-progress: false   # never kill a running training; queue the next one
+
+permissions:
+  contents: read
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+      KERNEL: ${{ secrets.KAGGLE_USERNAME }}/signatureai-retrain
+      SECRETS_DATASET: ${{ secrets.KAGGLE_USERNAME }}/signatureai-pipeline-secrets
+      MODE: ${{ github.event.inputs.mode || github.event.client_payload.mode || 'smoke' }}
+      HF_REVISION: ${{ github.event.inputs.hf_revision || github.event.client_payload.hf_sha || 'main' }}
+      DEPLOY: ${{ github.event_name == 'repository_dispatch' || github.event.inputs.deploy == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tools
+        run: pip install --quiet kaggle boto3
+
+      - name: Scheduled run - is there a new, untrained HF commit?
+        id: check
+        if: github.event_name == 'schedule'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python pipeline/kaggle_job.py check-hf --hf-repo "${{ vars.HF_DATASET_REPO }}"
+
+
+      - name: Trigger details
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          echo "event=${{ github.event_name }} mode=$MODE hf_revision=$HF_REVISION deploy=$DEPLOY"
+          echo "### Trigger: \`${{ github.event_name }}\` · mode \`$MODE\` · HF revision \`$HF_REVISION\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload run secrets to a private Kaggle dataset
+        if: steps.check.outputs.skip != 'true'
+        env:
+          COMET_API_KEY: ${{ secrets.COMET_API_KEY }}
+          COMET_WORKSPACE: ${{ secrets.COMET_WORKSPACE }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python pipeline/kaggle_job.py secrets --dataset "$SECRETS_DATASET"
+
+      - name: Build Kaggle job (notebook + kernel-metadata.json)
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          EXTRA=""
+          if [ "$DEPLOY" != "true" ]; then EXTRA="--no-deploy"; fi
+          python pipeline/kaggle_job.py build --kernel "$KERNEL" --mode "$MODE" \
+            --hf-revision "${{ steps.check.outputs.hf_sha || env.HF_REVISION }}" --secrets-dataset "$SECRETS_DATASET" \
+            --github-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --out build/kaggle $EXTRA
+
+      - name: Start training on Kaggle GPU
+        if: steps.check.outputs.skip != 'true'
+        run: kaggle kernels push -p build/kaggle
+
+      - name: Wait for Kaggle (training, evaluation, S3 upload, validation gate)
+        if: steps.check.outputs.skip != 'true'
+        run: python pipeline/kaggle_job.py wait --kernel "$KERNEL" --out build/output --timeout 18000
+
+      - name: Result summary
+        if: always() && steps.check.outputs.skip != 'true'
+        run: python pipeline/kaggle_job.py summary --result build/output/pipeline_result.json
+
+      - name: Keep reports
+        if: always() && steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrain-reports-${{ github.run_id }}
+          path: build/output
+          if-no-files-found: warn

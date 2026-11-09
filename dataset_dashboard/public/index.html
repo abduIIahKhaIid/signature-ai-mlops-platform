@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Review, correct, delete and export Roboflow/YOLO signature datasets locally.">
+  <meta name="color-scheme" content="light">
+  <title>Signature Dataset Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23172033'/%3E%3Cpath d='M6 21c3-7 6-10 8-9s-1 7 1 7 4-6 6-5-1 4 5 5' fill='none' stroke='%23FFE14D' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preload" href="/fonts/schibsted-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#welcome-view">Skip to main content</a>
+
+  <header class="topbar">
+    <button id="go-home" class="brand" type="button" aria-label="Signature Dataset Studio, go to start">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M5 21c3-7 6-10 8-9s-1 7 1 7 4-6 6-5-1 4 6 5"/></svg>
+      </span>
+      <span class="brand-name">Signature Dataset Studio</span>
+    </button>
+    <div class="topbar-spacer"></div>
+    <span class="local-badge" title="The service runs on 127.0.0.1. Files stay on this computer."><i></i>Running locally</span>
+    <div class="topbar-actions">
+      <button id="workspace-hf-import" class="btn btn-quiet" type="button">
+        <span class="hf-glyph" aria-hidden="true">🤗</span>
+        <span>Hugging Face</span>
+      </button>
+      <label class="btn btn-ink" for="zip-input">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4h14v-4"/></svg>
+        <span>Upload ZIP</span>
+      </label>
+      <input id="zip-input" type="file" accept=".zip,application/zip" hidden>
+    </div>
+  </header>
+
+  <!-- Start screen -->
+  <main id="welcome-view" class="welcome-view">
+    <section class="welcome-main" aria-labelledby="welcome-title">
+      <h1 id="welcome-title">Review every signature, box by box.</h1>
+      <p class="welcome-lede">Open a YOLO or Roboflow dataset, fix the bounding boxes, and export a clean copy for training. Nothing is scanned until you pick a source.</p>
+
+      <label id="drop-zone" class="drop-sheet" for="zip-input" tabindex="0">
+        <span class="drop-body">
+          <span class="drop-copy">
+            <span class="drop-state drop-state-idle">
+              <strong>Drop a dataset ZIP here</strong>
+              <span>A YOLO or Roboflow export with <em>images</em> and <em>labels</em> folders. Big archives are fine: they stream to disk and images show up while they extract.</span>
+            </span>
+            <span class="drop-state drop-state-active" aria-hidden="true">
+              <strong>Release to upload</strong>
+              <span>You will name the dataset before anything is copied.</span>
+            </span>
+            <span class="drop-actions">
+              <span class="btn btn-ink drop-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4h14v-4"/></svg>
+                Choose ZIP file
+              </span>
+              <span class="drop-note">Only <b>.zip</b> files are accepted</span>
+            </span>
+          </span>
+          <span class="drop-tree" aria-hidden="true">
+            <span class="tree-root"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg>dataset.zip</span>
+            <span class="tree-line">data.yaml</span>
+            <span class="tree-line">train/images<i>.jpg .png</i></span>
+            <span class="tree-line">train/labels<i>.txt</i></span>
+            <span class="tree-line">valid/ and test/</span>
+          </span>
+        </span>
+        <span class="drop-sign" aria-hidden="true">
+          <svg class="sign-stroke" viewBox="0 0 420 90">
+            <path pathLength="1" d="M8 62c22-4 30-40 44-42 12-2 2 44 16 44 13 0 18-36 30-36 10 0 4 30 16 30 14 0 22-46 36-46 9 0 2 40 14 40 16 0 18-24 30-24 9 0 8 18 20 18 22 0 40-22 64-22 26 0 44 14 70 10 18-3 34-12 64-14"/>
+          </svg>
+          <span class="sign-line"><b>×</b></span>
+        </span>
+      </label>
+
+      <div class="source-list">
+        <button id="open-hf-import" class="source-row" type="button">
+          <span class="source-icon source-icon-hf" aria-hidden="true">🤗</span>
+          <span class="source-copy">
+            <strong>Import from Hugging Face</strong>
+            <small>Paste a dataset ID or link. Works with ZIP archives and YOLO folders.</small>
+          </span>
+          <svg class="source-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <button id="welcome-folder-toggle" class="source-row" type="button" aria-expanded="false" aria-controls="welcome-folder-panel">
+          <span class="source-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z"/></svg>
+          </span>
+          <span class="source-copy">
+            <strong>Open a folder in this project</strong>
+            <small>Review a dataset that is already on disk, as a safe copy or in place.</small>
+          </span>
+          <svg class="source-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <div id="welcome-folder-panel" class="inline-form" hidden>
+          <label class="sr-only" for="welcome-folder-path">Dataset folder path</label>
+          <input id="welcome-folder-path" class="input" type="text" placeholder="D:\…\Signature Detection Project\…\dataset" spellcheck="false">
+          <button id="welcome-open-folder" class="btn btn-ink" type="button">Open folder</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="recent-panel" aria-labelledby="project-history-title">
+      <header class="panel-head">
+        <h2 id="project-history-title">Recent projects</h2>
+        <span id="project-history-count" class="count">0</span>
+      </header>
+      <div id="project-history-list" class="recent-list"></div>
+      <div id="project-history-empty" class="recent-empty">
+        <strong>Nothing opened yet</strong>
+        <small>Datasets you import or open from a folder are listed here so you can pick up where you left off.</small>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Workspace -->
+  <main id="workspace" class="workspace" hidden>
+    <aside class="sidebar" aria-label="Dataset controls">
+      <section class="side-section">
+        <label class="side-title" for="dataset-select">Dataset</label>
+        <div class="select-row">
+          <select id="dataset-select" class="input">
+            <option value="">Choose a dataset</option>
+          </select>
+          <button id="refresh-datasets" class="icon-btn" type="button" title="Refresh" aria-label="Refresh dataset list">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5"/><path d="M6.5 9a7 7 0 0 1 11.7-2.4L20 8M4 16l1.8 1.4A7 7 0 0 0 17.5 15"/></svg>
+          </button>
+        </div>
+        <dl class="health-list">
+          <div><dt>Status</dt><dd id="dataset-status"><span class="status-dot"></span>Waiting</dd></div>
+          <div><dt>Images</dt><dd id="dataset-total">—</dd></div>
+          <div><dt>Classes</dt><dd id="dataset-classes">—</dd></div>
+          <div><dt>Signature check</dt><dd id="dataset-validation">—</dd></div>
+        </dl>
+        <button id="edit-classes" class="link-btn" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-1 5 5-1L19 9l-4-4zM13 7l4 4"/></svg>
+          Edit classes
+        </button>
+      </section>
+
+      <section class="side-section">
+        <h2 class="side-title">Export a clean copy</h2>
+        <label class="field-label" for="export-name">Folder name</label>
+        <input id="export-name" class="input" type="text" placeholder="Dataset Name - Updated Export" spellcheck="false">
+        <small class="hint">Saved in <code>.signature-dashboard/exports</code>. Files with clashing names are renamed, never overwritten.</small>
+        <label class="check check-sm"><input id="export-single-class" type="checkbox"><span>Save every box as one class: <b>signature</b></span></label>
+        <div class="stack-actions">
+          <button id="export-dataset" class="btn btn-ink btn-block" type="button">Export dataset</button>
+          <button id="open-hf-export" class="btn btn-outline btn-block" type="button">
+            <span class="hf-glyph" aria-hidden="true">🤗</span>
+            Publish to Hugging Face
+          </button>
+        </div>
+        <div id="job-status" class="job-status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="side-section">
+        <button id="open-trash" class="trash-row" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"/></svg>
+          <span>Deleted images</span>
+          <span id="trash-count" class="count">0</span>
+        </button>
+        <button id="path-disclosure" class="trash-row" type="button" aria-expanded="false" aria-controls="path-panel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/></svg>
+          <span>Open another folder</span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div id="path-panel" class="disclosure-panel" hidden>
+          <label class="sr-only" for="folder-path">Folder path</label>
+          <input id="folder-path" class="input" type="text" placeholder="D:\…\dataset" spellcheck="false">
+          <button id="open-folder" class="btn btn-outline btn-block" type="button">Open folder</button>
+          <small class="hint">The folder must be inside this project.</small>
+        </div>
+      </section>
+    </aside>
+
+    <section class="content" aria-label="Image browser">
+      <header class="content-head">
+        <div class="content-title">
+          <div class="title-row">
+            <h1 id="dataset-heading">Choose a dataset to begin</h1>
+            <button id="rename-dataset" class="icon-btn icon-btn-plain" type="button" aria-label="Rename dataset" title="Rename" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-1 5 5-1L19 9l-4-4zM13 7l4 4"/></svg>
+            </button>
+          </div>
+          <p id="dataset-message">Images are indexed as file paths and loaded only when shown.</p>
+        </div>
+        <div class="content-actions">
+          <span class="kbd-hint"><kbd>←</kbd><kbd>→</kbd> change page</span>
+          <button id="reindex-button" class="btn btn-outline btn-sm" type="button" disabled>Re-index</button>
+        </div>
+      </header>
+
+      <div class="browser-bar">
+        <div id="split-tabs" class="split-tabs" role="toolbar" aria-label="Dataset splits" hidden></div>
+        <div class="browser-tools">
+          <label class="search">
+            <span class="sr-only">Search file names</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>
+            <input id="search-input" type="search" placeholder="Search file names">
+          </label>
+          <label class="per-page" for="page-size">
+            <span>Per page</span>
+            <select id="page-size" class="input input-sm">
+              <option>12</option>
+              <option selected>18</option>
+              <option>30</option>
+              <option>60</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div id="extraction-banner" class="live-banner" role="status" aria-live="polite" hidden>
+        <span class="spinner" aria-hidden="true"></span>
+        <div><strong>Preparing your dataset</strong><small id="extraction-message">Images show up here as soon as each image and label pair is ready.</small></div>
+      </div>
+
+      <div id="original-banner" class="original-banner" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <p><b>You are editing the original folder.</b> Saving boxes and deleting images change the real files in <span id="original-banner-path"></span>.</p>
+        <button id="make-working-copy" class="btn btn-outline btn-sm" type="button">Make a working copy</button>
+      </div>
+
+      <div id="issues-bar" class="bulk-bar bulk-bar-issue" hidden>
+        <p id="issues-summary"></p>
+      </div>
+
+      <div id="unlabeled-bar" class="bulk-bar" hidden>
+        <p id="unlabeled-summary"></p>
+        <button id="delete-unlabeled" class="btn btn-danger-soft btn-sm" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
+          Delete all unlabeled
+        </button>
+      </div>
+
+      <div id="empty-state" class="empty-state" hidden>
+        <h2>No images here</h2>
+        <p>Pick a dataset or upload a Roboflow/YOLO ZIP. Train, test, val, valid and validation folders are found automatically.</p>
+      </div>
+
+      <div id="image-grid" class="image-grid" aria-live="polite"></div>
+
+      <nav id="pagination" class="pager" aria-label="Image pages" hidden>
+        <div class="pager-summary">
+          <strong id="item-range">0–0</strong>
+          <span>of <span id="pagination-total">0</span></span>
+        </div>
+        <div class="pager-main">
+          <button id="first-page" class="pager-btn" type="button" aria-label="First page" title="First page">
+            <svg viewBox="0 0 24 24"><path d="m13 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+          <button id="previous-page" class="pager-btn" type="button" aria-label="Previous page">
+            <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <div id="page-numbers" class="page-numbers" aria-label="Page numbers"></div>
+          <button id="next-page" class="pager-btn" type="button" aria-label="Next page">
+            <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+          <button id="last-page" class="pager-btn" type="button" aria-label="Last page" title="Last page">
+            <svg viewBox="0 0 24 24"><path d="m11 17 5-5-5-5M6 17l5-5-5-5"/></svg>
+          </button>
+        </div>
+        <label class="page-jump" for="go-page">Page
+          <input id="go-page" class="input input-sm" type="number" min="1" value="1" inputmode="numeric">
+          <span id="page-indicator">/ 1</span>
+        </label>
+      </nav>
+    </section>
+  </main>
+
+  <!-- Reviewer -->
+  <dialog id="editor-dialog" class="reviewer" aria-labelledby="editor-title">
+    <form method="dialog" class="reviewer-shell">
+      <header class="reviewer-bar">
+        <div class="reviewer-file">
+          <button class="icon-btn" type="button" data-close-editor aria-label="Close reviewer" title="Close (Esc)">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+          <div class="file-copy">
+            <div class="file-title"><span id="editor-split" class="split-chip">TRAIN</span><h2 id="editor-title">Image annotation</h2></div>
+            <p id="editor-path"></p>
+          </div>
+        </div>
+
+        <nav class="reviewer-nav" aria-label="Image navigation">
+          <button id="editor-previous" class="nav-btn" type="button" aria-label="Previous image">
+            <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <span id="editor-position" class="position">— of —</span>
+          <button id="editor-next" class="nav-btn" type="button" aria-label="Next image">
+            <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </nav>
+
+        <div class="reviewer-actions">
+          <span id="save-state" class="save-state" role="status" aria-live="polite"><i></i>No unsaved changes</span>
+          <button id="save-labels" class="btn btn-ink btn-sm" type="button">Save labels</button>
+        </div>
+      </header>
+
+      <div id="label-warning" class="label-warning" role="alert" hidden></div>
+
+      <div class="reviewer-body">
+        <section class="stage" aria-label="Bounding box canvas">
+          <div class="stage-toolbar">
+            <div class="tool-group" role="group" aria-label="Canvas tool">
+              <button id="select-tool" class="tool active" type="button" aria-pressed="true" title="Select and move (V)">
+                <svg viewBox="0 0 24 24"><path d="m5 3 13 9-6 2-3 6z"/></svg>
+                <span>Select</span>
+              </button>
+              <button id="draw-tool" class="tool" type="button" aria-pressed="false" title="Draw a box (B)">
+                <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="1"/></svg>
+                <span>Draw box</span>
+              </button>
+            </div>
+            <div class="tool-group" role="group" aria-label="Edit history and image orientation">
+              <button id="undo-action" class="tool" type="button" disabled title="Undo (Ctrl+Z)">
+                <svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6"/></svg>
+                <span>Undo</span>
+              </button>
+              <span class="tool-sep" aria-hidden="true"></span>
+              <button id="rotate-left" class="tool tool-icon" type="button" title="Rotate view left" aria-label="Rotate view left 90 degrees">
+                <svg viewBox="0 0 24 24"><path d="M4 8V3m0 0h5M4 3l4 4a8 8 0 1 1-2 8"/></svg>
+              </button>
+              <output id="rotation-value" class="rotation">0°</output>
+              <button id="rotate-right" class="tool tool-icon" type="button" title="Rotate view right" aria-label="Rotate view right 90 degrees">
+                <svg viewBox="0 0 24 24"><path d="M20 8V3m0 0h-5m5 0-4 4a8 8 0 1 0 2 8"/></svg>
+              </button>
+            </div>
+            <label class="tool-group draw-class" title="Class given to new boxes">
+              <span>New boxes</span>
+              <select id="draw-class" class="tool-select"></select>
+            </label>
+            <div class="stage-hints">
+              <span><kbd>Del</kbd> remove box</span>
+              <span>Drag a corner to resize</span>
+            </div>
+          </div>
+          <div class="stage-canvas">
+            <div class="canvas-frame">
+              <canvas id="annotation-canvas" tabindex="0" aria-label="Image annotation canvas"></canvas>
+              <div id="canvas-loading" class="canvas-loading"><span class="spinner"></span>Loading image…</div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="Annotation inspector">
+          <header class="inspector-head">
+            <h3>Boxes</h3>
+            <span id="box-count" class="count">0</span>
+          </header>
+
+          <div id="box-list" class="box-list"></div>
+          <button id="add-box" class="add-box" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            Add a box
+          </button>
+
+          <div id="box-fields" class="box-fields" hidden>
+            <div class="box-fields-head"><span>Selected box</span><button id="delete-box" class="link-danger" type="button">Remove box</button></div>
+            <label class="field">Class<select id="box-class" class="input"></select></label>
+            <button id="inspector-edit-classes" class="link-btn" type="button">Add or rename classes</button>
+            <div class="field-grid">
+              <label class="field">X center<input id="box-x" class="input" type="number" min="0" max="1" step="0.001"></label>
+              <label class="field">Y center<input id="box-y" class="input" type="number" min="0" max="1" step="0.001"></label>
+              <label class="field">Width<input id="box-width" class="input" type="number" min="0.001" max="1" step="0.001"></label>
+              <label class="field">Height<input id="box-height" class="input" type="number" min="0.001" max="1" step="0.001"></label>
+            </div>
+          </div>
+
+          <div class="inspector-fill"></div>
+          <div class="inspector-foot">
+            <p class="format-note">Saved as YOLO rows: class, x center, y center, width, height (0 to 1).</p>
+            <button id="delete-image" class="btn btn-danger-soft btn-block" type="button" title="Delete image and label (Shift+Delete)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
+              Delete image and label
+            </button>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="reviewer-status">
+        <span><i class="dot-ok"></i>Changes save automatically when you move to another image</span>
+        <span><kbd>←</kbd><kbd>→</kbd> navigate</span>
+        <span><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo</span>
+        <span><kbd>Shift</kbd>+<kbd>Del</kbd> delete image</span>
+        <span><kbd>Esc</kbd> close</span>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- ZIP import -->
+  <dialog id="import-dialog" class="modal" aria-labelledby="import-title">
+    <form id="import-form" class="modal-card">
+      <header class="modal-head">
+        <h2 id="import-title">Name this dataset</h2>
+        <p class="modal-intro">Choose how it appears in the dashboard and where its working copy is stored.</p>
+      </header>
+      <div class="file-chip">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg>
+        <strong id="import-file-name">dataset.zip</strong><small id="import-file-size">0 MB</small>
+      </div>
+      <label class="field" for="import-dataset-name">Display name</label>
+      <input id="import-dataset-name" class="input" type="text" maxlength="80" required autocomplete="off">
+      <small class="hint">You can rename it later.</small>
+      <label class="field" for="import-folder-name">Working folder</label>
+      <div class="prefixed"><span>imports/</span><input id="import-folder-name" type="text" maxlength="100" required autocomplete="off" pattern="[^<>:&quot;/\\|?*]+"></div>
+      <small class="hint">Extracted into <code>.signature-dashboard/imports</code>. The original ZIP is not changed.</small>
+      <div id="folder-suggestion" class="notice notice-warn" role="status" hidden></div>
+      <footer class="modal-actions">
+        <button id="cancel-import" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="start-import" class="btn btn-ink" type="submit">Upload and import</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Hugging Face import -->
+  <dialog id="hf-import-dialog" class="modal modal-wide" aria-labelledby="hf-import-title">
+    <form id="hf-import-form" class="modal-card" novalidate>
+      <header class="modal-head modal-head-row">
+        <span class="modal-icon" aria-hidden="true">🤗</span>
+        <h2 id="hf-import-title">Import from Hugging Face</h2>
+        <ol class="steps" aria-label="Import steps">
+          <li id="hf-step-1" class="active"><span>1</span>Find</li>
+          <li id="hf-step-2"><span>2</span>Choose and import</li>
+        </ol>
+      </header>
+
+      <div id="hf-step-source" class="hf-step">
+        <label class="field" for="hf-import-repo">Dataset ID or link</label>
+        <input id="hf-import-repo" class="input input-lg" type="text" placeholder="username/signatures or https://huggingface.co/datasets/…" autocomplete="off" spellcheck="false">
+        <small class="hint">Folder links (<code>/tree/…</code>) and file links (<code>/blob/…</code>) also work.</small>
+        <div class="field-grid field-grid-wide">
+          <div>
+            <label class="field" for="hf-import-revision">Branch, tag or commit</label>
+            <input id="hf-import-revision" class="input" type="text" value="main" autocomplete="off" spellcheck="false">
+          </div>
+          <div>
+            <label class="field" for="hf-import-token">Access token <span class="muted">for private or gated datasets</span></label>
+            <input id="hf-import-token" type="password" class="input" placeholder="hf_…" autocomplete="off">
+          </div>
+        </div>
+        <small class="hint">The token is sent with this request only and is never saved. <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">Create a read token</a></small>
+        <div class="connection-row">
+          <span id="hf-import-connection" class="connection" data-state="unknown">Connection to Hugging Face not checked yet</span>
+          <button id="hf-import-check" class="link-btn" type="button">Check connection</button>
+        </div>
+        <details class="advanced">
+          <summary>Import one ZIP file directly</summary>
+          <label class="field" for="hf-import-zip-path">ZIP path inside the repository</label>
+          <input id="hf-import-zip-path" class="input" type="text" placeholder="exports/signatures.zip" autocomplete="off" spellcheck="false">
+          <small class="hint">Skips the repository scan.</small>
+        </details>
+      </div>
+
+      <div id="hf-step-choose" class="hf-step" hidden>
+        <div id="hf-preview-summary" class="repo-summary"></div>
+        <p class="field">What to import</p>
+        <div id="hf-options" class="hf-options" role="radiogroup" aria-label="Data to import"></div>
+        <div id="hf-notes" class="notice notice-warn" hidden></div>
+        <div class="field-grid field-grid-wide">
+          <div>
+            <label class="field" for="hf-import-name">Display name</label>
+            <input id="hf-import-name" class="input" type="text" maxlength="80" placeholder="From the selected source" autocomplete="off">
+          </div>
+          <div>
+            <label class="field" for="hf-import-folder">Working folder</label>
+            <div class="prefixed"><span>imports/</span><input id="hf-import-folder" type="text" maxlength="100" placeholder="auto" autocomplete="off"></div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-actions">
+        <button id="cancel-hf-import" class="btn btn-quiet" type="button">Cancel</button>
+        <span class="actions-spacer"></span>
+        <button id="hf-back" class="btn btn-outline" type="button" hidden>Back</button>
+        <button id="hf-inspect" class="btn btn-ink" type="submit">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>
+          Find data
+        </button>
+        <button id="start-hf-import" class="btn btn-ink" type="submit" hidden>Download and import</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Hugging Face export -->
+  <dialog id="hf-export-dialog" class="modal" aria-labelledby="hf-export-title">
+    <form id="hf-export-form" class="modal-card">
+      <header class="modal-head">
+        <h2 id="hf-export-title">Publish to Hugging Face</h2>
+        <p class="modal-intro">A clean ZIP is built, checked as a signature detection dataset and uploaded to your dataset repository.</p>
+      </header>
+      <label class="field" for="hf-export-repo">Destination repository</label>
+      <input id="hf-export-repo" class="input" type="text" placeholder="username/signature-dataset" required autocomplete="off">
+      <label class="field" for="hf-export-zip-name">ZIP file name</label>
+      <input id="hf-export-zip-name" class="input" type="text" placeholder="Dataset Name - Updated Export.zip" required autocomplete="off">
+      <label class="field" for="hf-export-token">Write token</label>
+      <input id="hf-export-token" type="password" class="input" placeholder="hf_…" required autocomplete="off">
+      <small class="hint">Needs write access. Used for this upload only and never saved. <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">Manage tokens</a></small>
+      <div id="hf-export-error" class="notice notice-error" role="alert" hidden></div>
+      <div class="connection-row">
+        <span id="hf-export-connection" class="connection" data-state="unknown">Connection to Hugging Face not checked yet</span>
+        <button id="hf-export-check" class="link-btn" type="button">Check connection</button>
+      </div>
+      <label class="check"><input id="hf-single-class" type="checkbox"><span>Save every box as one class: <b>signature</b> <span class="muted">(fixes data.yaml files whose classes are not named signature)</span></span></label>
+      <label class="check"><input id="hf-create-repo" type="checkbox" checked><span>Create the repository if it does not exist</span></label>
+      <label class="check"><input id="hf-private-repo" type="checkbox" checked><span>Make a new repository private</span></label>
+      <footer class="modal-actions">
+        <button id="cancel-hf-export" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="start-hf-export" class="btn btn-ink" type="submit">Check and publish</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Export progress -->
+  <dialog id="export-progress-dialog" class="modal" aria-labelledby="export-progress-title">
+    <div class="modal-card progress-card">
+      <svg class="progress-stroke" viewBox="0 0 220 60" aria-hidden="true"><path pathLength="1" d="M6 40c14-2 18-26 28-27 8-1 1 29 11 29 9 0 12-24 20-24 7 0 3 20 11 20 10 0 15-30 25-30 6 0 1 26 10 26 12 0 26-14 44-14 18 0 30 9 55 6"/></svg>
+      <h2 id="export-progress-title">Exporting dataset</h2>
+      <p id="export-progress-detail">Preparing image and label pairs</p>
+      <progress id="export-progress" class="bar" max="100" value="0">0%</progress>
+      <ol id="publish-stages" class="stage-list" hidden></ol>
+      <small id="export-progress-hint" class="hint">Keep this tab open until the export finishes.</small>
+      <footer id="publish-actions" class="modal-actions" hidden>
+        <button id="cancel-publish" class="btn btn-quiet" type="button">Cancel publishing</button>
+        <span class="actions-spacer"></span>
+        <a id="publish-open-hub" class="btn btn-outline" href="#" target="_blank" rel="noreferrer" hidden>Open on Hugging Face</a>
+        <button id="close-publish" class="btn btn-ink" type="button" hidden>Done</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <!-- Rename -->
+  <dialog id="rename-dialog" class="modal" aria-labelledby="rename-title">
+    <form id="rename-form" class="modal-card">
+      <header class="modal-head">
+        <h2 id="rename-title">Rename dataset</h2>
+        <p class="modal-intro">Only the name shown in the dashboard changes. Folders and files stay where they are.</p>
+      </header>
+      <label class="field" for="rename-input">Dataset name</label>
+      <input id="rename-input" class="input" type="text" maxlength="80" autocomplete="off" required>
+      <footer class="modal-actions">
+        <button id="cancel-rename" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="save-rename" class="btn btn-ink" type="submit">Save name</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Deleted images -->
+  <dialog id="trash-dialog" class="modal modal-wide" aria-labelledby="trash-title">
+    <div class="modal-card">
+      <header class="modal-head">
+        <h2 id="trash-title">Deleted images</h2>
+        <p class="modal-intro">Deleted images and labels are kept in <code>.signature-dashboard/trash</code> until you empty it. Restoring puts both files back where they were.</p>
+        <p id="trash-retention" class="hint"></p>
+      </header>
+      <div id="trash-list" class="trash-list"></div>
+      <p id="trash-empty" class="trash-empty" hidden>Nothing has been deleted from this dataset.</p>
+      <footer class="modal-actions">
+        <button id="empty-trash" class="btn btn-danger-soft" type="button">Empty trash</button>
+        <span class="actions-spacer"></span>
+        <button id="close-trash" class="btn btn-ink" type="button">Done</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <!-- Open a folder: work on a copy or on the original -->
+  <dialog id="open-folder-dialog" class="modal" aria-labelledby="open-folder-title">
+    <form id="open-folder-form" class="modal-card">
+      <header class="modal-head">
+        <h2 id="open-folder-title">How do you want to open this folder?</h2>
+      </header>
+      <div class="file-chip folder-chip">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3z"/></svg>
+        <span class="folder-chip-copy">
+          <strong id="folder-dialog-name">dataset</strong>
+          <small id="folder-dialog-path"></small>
+        </span>
+        <small id="folder-dialog-stats">Measuring…</small>
+      </div>
+      <div class="mode-options" role="radiogroup" aria-label="How to open the folder">
+        <label class="mode-option">
+          <input type="radio" name="folder-mode" value="copy" checked>
+          <span>
+            <strong>Make a working copy <span class="tag tag-ok">Recommended</span></strong>
+            <small>The folder is copied into <code>.signature-dashboard/imports</code>. Edits and deletes only touch the copy, so the original dataset stays exactly as it is.</small>
+          </span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="folder-mode" value="original">
+          <span>
+            <strong>Edit the original folder</strong>
+            <small>No copy is made. Saved boxes and deleted images change the real files in this folder straight away.</small>
+          </span>
+        </label>
+      </div>
+      <div id="folder-copy-fields" class="field-grid field-grid-wide">
+        <div>
+          <label class="field" for="folder-copy-name">Display name</label>
+          <input id="folder-copy-name" class="input" type="text" maxlength="80" autocomplete="off">
+        </div>
+        <div>
+          <label class="field" for="folder-copy-folder">Working folder</label>
+          <div class="prefixed"><span>imports/</span><input id="folder-copy-folder" type="text" maxlength="100" autocomplete="off"></div>
+        </div>
+      </div>
+      <p id="folder-original-warning" class="notice notice-warn" hidden>Changes you make are written to the original files. Deleted images go to the trash and can be restored for 30 days.</p>
+      <footer class="modal-actions">
+        <button id="cancel-open-folder" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="confirm-open-folder" class="btn btn-ink" type="submit">Copy and open</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Classes -->
+  <dialog id="classes-dialog" class="modal" aria-labelledby="classes-title">
+    <form id="classes-form" class="modal-card">
+      <header class="modal-head">
+        <h2 id="classes-title">Classes</h2>
+        <p class="modal-intro">Names are saved in <code>data.yaml</code>. Label files store class numbers, so renaming a class never moves or changes a box.</p>
+      </header>
+      <div id="classes-suggestion" class="notice notice-warn suggestion" hidden>
+        <p id="classes-suggestion-text"></p>
+        <button id="classes-apply-suggestion" class="btn btn-outline btn-sm" type="button">Rename it to signature</button>
+      </div>
+      <div id="classes-list" class="classes-list"></div>
+      <button id="add-class" class="add-box" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Add a class
+      </button>
+      <p id="classes-original-note" class="hint" hidden>This dataset is an original folder, so its own data.yaml is changed.</p>
+      <footer class="modal-actions">
+        <button id="cancel-classes" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="save-classes" class="btn btn-ink" type="submit">Save to data.yaml</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Confirmation -->
+  <dialog id="confirm-dialog" class="modal modal-confirm" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <form id="confirm-form" method="dialog" class="modal-card confirm-card">
+      <div class="confirm-top">
+        <span id="confirm-icon" class="confirm-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>
+        </span>
+        <div class="confirm-copy">
+          <h2 id="confirm-title">Delete this image?</h2>
+          <p id="confirm-message"></p>
+        </div>
+      </div>
+      <div id="confirm-preview" class="confirm-preview" hidden>
+        <img id="confirm-preview-image" alt="">
+        <div class="confirm-files">
+          <div><span class="file-kind">Image</span><strong id="confirm-image-name"></strong></div>
+          <div><span class="file-kind">Label</span><strong id="confirm-label-name"></strong><small id="confirm-label-state"></small></div>
+        </div>
+      </div>
+      <p id="confirm-note" class="confirm-note" hidden></p>
+      <footer class="modal-actions">
+        <button id="confirm-cancel" class="btn btn-quiet" type="button">Keep it</button>
+        <button id="confirm-accept" class="btn btn-danger" type="button">Delete</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Background activity -->
+  <div id="upload-panel" class="activity" role="status" aria-live="polite" hidden>
+    <div class="activity-head">
+      <span class="spinner" aria-hidden="true"></span>
+      <div class="activity-copy">
+        <strong id="upload-title">Uploading dataset…</strong>
+        <span id="upload-detail">0%</span>
+      </div>
+      <button id="job-cancel" class="btn btn-quiet btn-sm" type="button" hidden>Cancel</button>
+    </div>
+    <progress id="upload-progress" class="bar" max="100" value="0">0%</progress>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

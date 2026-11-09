@@ -1,0 +1,7 @@
+# API container: no torch / model code, so the image stays small and starts fast.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+celery[redis]>=5.4,<6
+boto3>=1.34
+logfire[fastapi,celery,redis]>=3
