@@ -322,7 +322,8 @@ print(json.dumps(PIPELINE_RESULT, indent=2, default=str))
 
 FINAL = """
 # Hand results to GitHub Actions (kaggle kernels output) — small files only, the model lives in S3.
-_out = Path('/kaggle/working') if Path('/kaggle/working').exists() else RUN_DIR
+_out = Path('/kaggle/working') if Path('/kaggle/working').exists() else RUN_DIR / 'handoff'
+_out.mkdir(parents=True, exist_ok=True)
 save_json(_out / 'pipeline_result.json', PIPELINE_RESULT)
 shutil.copy2(manifest_path, _out / 'manifest.json')
 shutil.copytree(REPORTS_DIR, _out / 'reports', dirs_exist_ok=True,
