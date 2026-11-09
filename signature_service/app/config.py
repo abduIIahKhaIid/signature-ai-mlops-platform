@@ -73,7 +73,7 @@ class Settings:
     hf_dataset_repo: str | None = field(default_factory=lambda: os.getenv("HF_DATASET_REPO") or None)
     github_repo: str | None = field(default_factory=lambda: os.getenv("GITHUB_REPO") or None)  # owner/name
     github_token: str | None = field(default_factory=lambda: os.getenv("GITHUB_TOKEN") or None)
-    retrain_mode: str = field(default_factory=lambda: os.getenv("RETRAIN_MODE", "smoke"))
+    retrain_mode: str = field(default_factory=lambda: os.getenv("RETRAIN_MODE", "full"))
     retrain_cooldown_seconds: int = field(default_factory=lambda: _int("RETRAIN_COOLDOWN_SECONDS", 1800))
 
     # Observability

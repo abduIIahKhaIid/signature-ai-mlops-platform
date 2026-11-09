@@ -76,7 +76,8 @@ def cmd_secrets(a) -> None:
 def overrides_cell(a) -> str:
     cfg = dict(MODES[a.mode])
     cfg.update(
-        PIPELINE_MODE=a.mode, ZIP_SOURCE="huggingface", HF_REVISION=a.hf_revision or "main",
+        PIPELINE_MODE=a.mode, ZIP_SOURCE="huggingface", HF_DATASET_REPO=a.hf_repo,
+        HF_ZIP_FILENAME=a.hf_zip, HF_REVISION=a.hf_revision or "main",
         BATCH_SIZE=8, GRAD_ACCUM=1, NUM_WORKERS=4, USE_COMET=True, UPLOAD_TO_S3=True,
         S3_UPDATE_LATEST_ALIAS=False, PROMOTE_TO_PRODUCTION=False, RELOAD_FROM_S3=False, SAVE_TO_DRIVE=False,
         AUTO_DEPLOY=not a.no_deploy, DEPLOY_ALIAS=a.deploy_alias,
@@ -132,7 +133,11 @@ def cmd_wait(a) -> None:
             break
         time.sleep(a.poll)
     else:
-        sys.exit(f"timed out after {a.timeout}s waiting for {a.kernel}")
+        Path(a.out).mkdir(parents=True, exist_ok=True)
+        (Path(a.out) / "STILL_RUNNING").write_text(a.kernel)
+        print(f"::warning::stopped waiting after {a.timeout}s; {a.kernel} keeps running on Kaggle. "
+              "Its result will appear in S3 pipeline_runs/ and Comet, and the gate still deploys if it passes.")
+        return
     Path(a.out).mkdir(parents=True, exist_ok=True)
     r = run("kaggle", "kernels", "output", a.kernel, "-p", a.out, check=False)
     print(r.stdout[-3000:], r.stderr[-3000:])
@@ -143,6 +148,14 @@ def cmd_wait(a) -> None:
 def cmd_summary(a) -> None:
     path = Path(a.result)
     if not path.exists():
+        if (path.parent / "STILL_RUNNING").exists():
+            text = ("## ⏳ Training still running on Kaggle\n\nGitHub stopped waiting (job time limit). The notebook "
+                    "continues; check S3 `pipeline_runs/` and the Comet experiment for the result.\n")
+            print(text)
+            if os.environ.get("GITHUB_STEP_SUMMARY"):
+                with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+                    f.write(text)
+            return
         sys.exit(f"{path} not found: the notebook did not reach the end")
     r = json.loads(path.read_text())
     icon = {"deployed": "✅", "approved_not_deployed": "🟡", "rejected": "⛔"}.get(r["status"], "❔")
@@ -161,8 +174,9 @@ def cmd_summary(a) -> None:
         f"| Best val mAP@50 | {f4(r.get('best_val_map50'))} |",
         f"| **Test mAP@50** | **{f4(r.get('test_map50'))}** |",
         f"| Recommended threshold | {r.get('recommended_threshold')} |",
-        f"| Gate | passed={gate.get('passed')} · floor {gate.get('floor')} · baseline "
-        f"`{gate.get('baseline_version')}` ({gate.get('baseline_test_map50')}) |",
+        f"| Dataset ZIP | `{r.get('hf_zip_filename')}` |",
+        f"| Champion (served) on this test set | `{gate.get('baseline_version')}` → {f4(gate.get('baseline_test_map50'))} |",
+        f"| Gate | passed={gate.get('passed')} · floor {gate.get('floor')} · max drop {gate.get('max_regression')} |",
         f"| Gate reasons | {'; '.join(gate.get('reasons') or []) or '—'} |",
         f"| Deployed to alias | {r.get('deploy_alias') or '—'} |",
         f"| S3 | `{r.get('s3_model_uri')}` |",
@@ -210,6 +224,8 @@ def main() -> None:
     b = sub.add_parser("build")
     b.add_argument("--kernel", required=True)
     b.add_argument("--mode", choices=sorted(MODES), default="smoke")
+    b.add_argument("--hf-repo", default="mabdullahkhalid/Signature_Dataset_Detection")
+    b.add_argument("--hf-zip", default="auto", help="'auto' = most recently committed .zip in the repo")
     b.add_argument("--hf-revision", default="main")
     b.add_argument("--secrets-dataset", default="")
     b.add_argument("--deploy-alias", default="latest")

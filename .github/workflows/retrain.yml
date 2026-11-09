@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "smoke = 2k images, 1 epoch, warm start (~40 min) | full = whole dataset"
+        description: "smoke = 2k images, 1 epoch (pipeline proof, ~40 min) | full = whole dataset (real retrain, hours)"
         type: choice
         options: [smoke, full]
         default: smoke
@@ -39,7 +39,7 @@ jobs:
       KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
       KERNEL: ${{ secrets.KAGGLE_USERNAME }}/signatureai-retrain
       SECRETS_DATASET: ${{ secrets.KAGGLE_USERNAME }}/signatureai-pipeline-secrets
-      MODE: ${{ github.event.inputs.mode || github.event.client_payload.mode || 'smoke' }}
+      MODE: ${{ github.event.inputs.mode || github.event.client_payload.mode || 'full' }}
       HF_REVISION: ${{ github.event.inputs.hf_revision || github.event.client_payload.hf_sha || 'main' }}
       DEPLOY: ${{ github.event_name == 'repository_dispatch' || github.event.inputs.deploy == 'true' }}
     steps:
@@ -98,6 +98,7 @@ jobs:
           EXTRA=""
           if [ "$DEPLOY" != "true" ]; then EXTRA="--no-deploy"; fi
           python pipeline/kaggle_job.py build --kernel "$KERNEL" --mode "$MODE" \
+            --hf-repo "${{ vars.HF_DATASET_REPO }}" \
             --hf-revision "${{ steps.check.outputs.hf_sha || env.HF_REVISION }}" --secrets-dataset "$SECRETS_DATASET" \
             --github-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --out build/kaggle $EXTRA

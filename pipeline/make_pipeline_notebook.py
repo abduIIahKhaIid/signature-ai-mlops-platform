@@ -110,35 +110,71 @@ if USE_COMET or UPLOAD_TO_S3 or UPLOAD_TO_R2:
 INIT_WEIGHTS = """
 # Initial weights: base checkpoint, or WARM START from the model currently behind an S3 alias
 # (continuing from the deployed model is what makes a short retrain on new data useful).
+import boto3
+def _models_s3():
+    kw = {'aws_access_key_id': secret_or_none('AWS_ACCESS_KEY_ID'),
+          'aws_secret_access_key': secret_or_none('AWS_SECRET_ACCESS_KEY'),
+          'region_name': secret_or_none('AWS_REGION')}
+    if secret_or_none('AWS_SESSION_TOKEN'):
+        kw['aws_session_token'] = secret_or_none('AWS_SESSION_TOKEN')
+    return boto3.Session(**kw).client('s3')
+
+_alias_model_cache = {}
+def fetch_alias_model(alias):
+    \"\"\"(local model dir, version) of the model behind s3://<bucket>/<prefix>/aliases/<alias>.json, SHA-verified.
+    (None, None) when the alias does not exist or anything fails.\"\"\"
+    if alias in _alias_model_cache:
+        return _alias_model_cache[alias]
+    s3c, bucket, prefix = _models_s3(), secret_or_none('AWS_S3_BUCKET'), S3_PREFIX.strip('/')
+    try:
+        version = json.loads(s3c.get_object(Bucket=bucket, Key=f'{prefix}/aliases/{alias}.json')['Body'].read())['version']
+        man = json.loads(s3c.get_object(Bucket=bucket, Key=f'{prefix}/versions/{version}/manifest.json')['Body'].read())
+        target = WORKDIR / 'alias_models' / version
+        model_dir = target / man.get('model_subdirectory', 'best_model')
+        if not (model_dir / 'config.json').exists():
+            target.mkdir(parents=True, exist_ok=True)
+            zpath = target / 'artifact.zip'
+            s3c.download_file(bucket, f'{prefix}/versions/{version}/artifact.zip', str(zpath))
+            if sha256_file(zpath) != man['artifact_sha256']:
+                raise RuntimeError('artifact SHA-256 mismatch')
+            with zipfile.ZipFile(zpath) as z:
+                for m in z.namelist():
+                    if m.startswith('/') or '..' in Path(m).parts:
+                        raise ValueError(f'unsafe entry {m}')
+                z.extractall(target)
+            zpath.unlink()
+        result = (str(model_dir), version)
+    except Exception as e:
+        print(f'NOTE: no usable model behind alias {alias!r} ({e!r})')
+        result = (None, None)
+    _alias_model_cache[alias] = result
+    return result
+
 INIT_PATH, INIT_VERSION = MODEL_ID, None
 if INIT_FROM in ('latest', 'production'):
-    import boto3
-    _kw = {'aws_access_key_id': secret_or_none('AWS_ACCESS_KEY_ID'),
-           'aws_secret_access_key': secret_or_none('AWS_SECRET_ACCESS_KEY'),
-           'region_name': secret_or_none('AWS_REGION')}
-    if secret_or_none('AWS_SESSION_TOKEN'): _kw['aws_session_token'] = secret_or_none('AWS_SESSION_TOKEN')
-    _s3i = boto3.Session(**_kw).client('s3')
-    _bucket, _prefix = secret_or_none('AWS_S3_BUCKET'), S3_PREFIX.strip('/')
-    try:
-        _alias = json.loads(_s3i.get_object(Bucket=_bucket, Key=f'{_prefix}/aliases/{INIT_FROM}.json')['Body'].read())
-        INIT_VERSION = _alias['version']
-        _man = json.loads(_s3i.get_object(Bucket=_bucket, Key=f'{_prefix}/versions/{INIT_VERSION}/manifest.json')['Body'].read())
-        _dir = WORKDIR / 'init_model' / INIT_VERSION
-        _dir.mkdir(parents=True, exist_ok=True)
-        _zip = _dir / 'artifact.zip'
-        _s3i.download_file(_bucket, f'{_prefix}/versions/{INIT_VERSION}/artifact.zip', str(_zip))
-        if sha256_file(_zip) != _man['artifact_sha256']:
-            raise RuntimeError('warm-start artifact SHA-256 mismatch')
-        with zipfile.ZipFile(_zip) as _z:
-            for _m in _z.namelist():
-                if _m.startswith('/') or '..' in Path(_m).parts:
-                    raise ValueError(f'unsafe entry {_m}')
-            _z.extractall(_dir)
-        INIT_PATH = str(_dir / _man.get('model_subdirectory', 'best_model'))
-    except Exception as e:
-        print(f'WARNING: warm start from alias {INIT_FROM!r} failed ({e!r}); using base checkpoint {MODEL_ID}')
-        INIT_PATH, INIT_VERSION = MODEL_ID, None
+    _p, _v = fetch_alias_model(INIT_FROM)
+    if _p:
+        INIT_PATH, INIT_VERSION = _p, _v
+    else:
+        print(f'WARNING: warm start from alias {INIT_FROM!r} not possible; using base checkpoint {MODEL_ID}')
 print('Initial weights:', INIT_FROM, '->', INIT_VERSION or MODEL_ID)
+"""
+
+AUTO_ZIP = """    if HF_ZIP_FILENAME in (None, '', 'auto'):
+        # Each upload is a full reviewed dataset ZIP with any file name: train on the most recently committed one.
+        _zips = [f for f in api.list_repo_tree(HF_DATASET_REPO, repo_type='dataset', revision=HF_RESOLVED_COMMIT,
+                                               recursive=True, expand=True)
+                 if str(getattr(f, 'path', '')).lower().endswith('.zip') and getattr(f, 'size', None) is not None]
+        if not _zips:
+            raise RuntimeError(f'No .zip dataset found in {HF_DATASET_REPO}@{HF_RESOLVED_COMMIT}')
+        _epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+        def _committed(f):
+            return getattr(getattr(f, 'last_commit', None), 'date', None) or _epoch
+        _zips.sort(key=lambda f: (_committed(f), f.path), reverse=True)
+        HF_ZIP_FILENAME = _zips[0].path
+        print('Auto-selected dataset ZIP (most recently committed):', HF_ZIP_FILENAME, '| committed', _committed(_zips[0]))
+        if len(_zips) > 1:
+            print('Other ZIPs in the repo (not used):', [z.path for z in _zips[1:]])
 """
 
 SUBSET = """
@@ -210,12 +246,22 @@ def _s3_json(key):
 assert UPLOAD_TO_S3 and S3_MODEL_URI, 'The pipeline gate needs the candidate uploaded to S3 first.'
 _prefix = S3_PREFIX.strip('/')
 candidate_map50 = float(test_metrics.get('map_50', float('nan')))
-_current = _s3_json(f'{_prefix}/aliases/{DEPLOY_ALIAS}.json')
-baseline_version = _current.get('version') if _current else None
-baseline_map50 = None
-if baseline_version:
-    _bm = _s3_json(f'{_prefix}/versions/{baseline_version}/manifest.json') or {}
-    baseline_map50 = _bm.get('test_map50')
+
+# Champion = model currently served (behind DEPLOY_ALIAS), challenger = this run. Both are scored on THIS
+# run's held-out test set, so the comparison is fair even when the dataset (and its test split) changed.
+baseline_path, baseline_version = fetch_alias_model(DEPLOY_ALIAS)
+baseline_map50, baseline_test_metrics = None, None
+if baseline_path:
+    _challenger = model
+    try:
+        model = AutoModelForObjectDetection.from_pretrained(baseline_path).to(device)
+        baseline_test_metrics = run_validation(test_loader, with_loss=False)
+        baseline_map50 = float(baseline_test_metrics.get('map_50', float('nan')))
+        print(f'Champion {baseline_version}: test mAP@50 {baseline_map50:.4f} | challenger {RUN_VERSION}: {candidate_map50:.4f}')
+    finally:
+        del model
+        model = _challenger
+        torch.cuda.empty_cache()
 
 gate_reasons = []
 if not math.isfinite(candidate_map50):
@@ -223,7 +269,7 @@ if not math.isfinite(candidate_map50):
 elif candidate_map50 < GATE_MIN_TEST_MAP50:
     gate_reasons.append(f'test mAP@50 {candidate_map50:.4f} < floor {GATE_MIN_TEST_MAP50}')
 if baseline_map50 is not None and math.isfinite(candidate_map50) and candidate_map50 < baseline_map50 - GATE_MAX_REGRESSION:
-    gate_reasons.append(f'regression: {candidate_map50:.4f} vs serving {baseline_map50:.4f} (max drop {GATE_MAX_REGRESSION})')
+    gate_reasons.append(f'regression on the same test set: {candidate_map50:.4f} vs serving {baseline_map50:.4f} (max drop {GATE_MAX_REGRESSION})')
 GATE_PASSED = not gate_reasons
 GATE_DEPLOYED = False
 if GATE_PASSED and AUTO_DEPLOY:
@@ -249,7 +295,9 @@ PIPELINE_RESULT = {
     'recommended_threshold': RECOMMENDED_THRESHOLD,
     'gate': {'passed': GATE_PASSED, 'reasons': gate_reasons, 'floor': GATE_MIN_TEST_MAP50,
              'max_regression': GATE_MAX_REGRESSION, 'baseline_version': baseline_version,
-             'baseline_test_map50': baseline_map50},
+             'baseline_test_map50': baseline_map50, 'compared_on': 'this run test set',
+             'baseline_test_metrics': baseline_test_metrics},
+    'hf_zip_filename': HF_ZIP_FILENAME,
     'deploy_alias': DEPLOY_ALIAS if GATE_DEPLOYED else None,
     's3_model_uri': S3_MODEL_URI,
     'comet_experiment_key': comet_experiment.get_key() if comet_experiment else None,
@@ -265,7 +313,9 @@ if HF_RESOLVED_COMMIT:  # marker: this dataset commit has been trained (any outc
                   ContentType='application/json', ServerSideEncryption='AES256')
 if comet_experiment:
     comet_experiment.log_other('pipeline_status', PIPELINE_RESULT['status'])
-    comet_experiment.log_metrics({'gate_passed': int(GATE_PASSED), 'gate_deployed': int(GATE_DEPLOYED)})
+    comet_experiment.log_metrics({'gate_passed': int(GATE_PASSED), 'gate_deployed': int(GATE_DEPLOYED),
+                                  'champion_test_map50': baseline_map50 if baseline_map50 is not None else float('nan'),
+                                  'challenger_test_map50': candidate_map50})
     comet_experiment.add_tag(f"gate-{PIPELINE_RESULT['status']}")
 print(json.dumps(PIPELINE_RESULT, indent=2, default=str))
 """
@@ -300,6 +350,8 @@ def build(source: Path, target: Path) -> None:
         hf_token = None
 """, "    hf_token = secret_or_none('HF_TOKEN')\n", 4)
     c4 = patch(c4, "local_dir='/content/signatureai_hf_download'", "local_dir=str(WORKDIR.parent / 'signatureai_hf_download')", 4)
+    c4 = patch(c4, "    print('Pinned Hugging Face dataset commit:', HF_RESOLVED_COMMIT)\n",
+               "    print('Pinned Hugging Face dataset commit:', HF_RESOLVED_COMMIT)\n" + AUTO_ZIP, 4)
 
     c14 = patch(src(14), "AutoImageProcessor.from_pretrained(MODEL_ID, use_fast=False)",
                 "AutoImageProcessor.from_pretrained(INIT_PATH, use_fast=False)", 14)
@@ -313,7 +365,7 @@ def build(source: Path, target: Path) -> None:
                 "'phash_threshold': PHASH_THRESHOLD, 'ssim_threshold': SSIM_THRESHOLD,\n"
                 "        'pipeline_mode': PIPELINE_MODE, 'init_from': INIT_FROM, 'init_version': INIT_VERSION,\n"
                 "        'max_train_images': MAX_TRAIN_IMAGES, 'max_val_images': MAX_VAL_IMAGES, 'runtime': RUNTIME_NAME,\n"
-                "        'num_workers': NUM_WORKERS\n    })", 16)
+                "        'num_workers': NUM_WORKERS, 'hf_zip_filename': HF_ZIP_FILENAME\n    })", 16)
 
     c17 = src(17)
     assert "backup_to_s3" in c17, "cell 17 must be the fixed training cell with S3 checkpoint backups"
