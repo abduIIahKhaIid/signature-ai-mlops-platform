@@ -54,13 +54,14 @@ def cmd_secrets(a) -> None:
         (d / "pipeline_secrets.json").write_text(json.dumps(values))
         (d / "dataset-metadata.json").write_text(json.dumps(
             {"title": slug, "id": a.dataset, "licenses": [{"name": "CC0-1.0"}]}))
-        exists = run("kaggle", "datasets", "status", a.dataset, check=False).returncode == 0
-        if exists:
-            r = run("kaggle", "datasets", "version", "-p", str(d), "-m", "pipeline run", check=False)
-        else:
-            r = run("kaggle", "datasets", "create", "-p", str(d), check=False)  # private by default
-        print(r.stdout, r.stderr)
-        if r.returncode != 0:
+        r = run("kaggle", "datasets", "version", "-p", str(d), "-m", "pipeline run", check=False)
+        text = (r.stdout + r.stderr).lower()
+        if r.returncode != 0 or "error" in text or "not found" in text or "404" in text:
+            print("no existing secrets dataset (or version failed) -> creating it (private)")
+            r = run("kaggle", "datasets", "create", "-p", str(d), check=False)  # private unless --public
+            text = (r.stdout + r.stderr).lower()
+        print(r.stdout[-1500:], r.stderr[-1500:])  # the CLI never echoes file contents
+        if r.returncode != 0 or ("error" in text and "already" not in text):
             sys.exit("could not upload the secrets dataset")
     for _ in range(60):  # wait until Kaggle has processed the new version
         status = run("kaggle", "datasets", "status", a.dataset, check=False).stdout.strip().lower()

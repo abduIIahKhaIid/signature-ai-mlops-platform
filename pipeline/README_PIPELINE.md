@@ -34,7 +34,8 @@ Repo → Settings → Secrets and variables → Actions.
 
 | Secret | Value |
 |---|---|
-| `KAGGLE_USERNAME`, `KAGGLE_KEY` | from `kaggle.json` |
+| `KAGGLE_USERNAME` | your Kaggle username |
+| `KAGGLE_KEY` **or** `KAGGLE_API_TOKEN` | legacy key from `kaggle.json`, or a new Kaggle API token (Settings → API) |
 | `COMET_API_KEY` (+ optional `COMET_WORKSPACE`) | Comet |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | the `signatureai-colab-uploader` user (read/write on `signatureai/detection/*`) |
 | `AWS_REGION` | `ap-southeast-2` |
@@ -97,6 +98,10 @@ alias, and therefore production traffic, does not move.
 * `pipeline/kaggle_job.py` — `secrets`, `build`, `wait`, `summary`, `check-hf` steps used by the workflow.
 * `.github/workflows/retrain.yml` — the orchestrator.
 * `signature_service/app/webhooks.py` — HF webhook → GitHub dispatch (secret check, filters, per-commit de-dup, 30-min cooldown).
+
+## GPU
+The workflow pushes the kernel with `--accelerator NvidiaTeslaT4`: Kaggle's current PyTorch build no longer supports
+the P100 (sm_60). The notebook also stops within seconds if it lands on an unsupported GPU.
 
 ## Not verified yet (verify during the first run)
 The notebook's static checks pass, but it has not run end-to-end on Kaggle: the first `smoke` run is the real test.

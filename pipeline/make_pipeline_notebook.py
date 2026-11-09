@@ -8,7 +8,7 @@ The result runs unchanged on Colab (manual) and Kaggle (headless, started by Git
   * VALIDATION GATE: the new model is deployed (S3 alias moved) only if it passes quality checks
   * pipeline_result.json + reports copied to /kaggle/working for GitHub Actions to collect
 
-Usage:  python pipeline/make_pipeline_notebook.py notebooks/01_detection_training_colab.ipynb pipeline/train_pipeline.ipynb
+Usage:  python pipeline/make_pipeline_notebook.py <source_notebook.ipynb> pipeline/train_pipeline.ipynb
 Every patch asserts that its anchor text exists, so a changed source notebook fails loudly.
 """
 from __future__ import annotations
