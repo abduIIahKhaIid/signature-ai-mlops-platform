@@ -68,13 +68,35 @@ class Settings:
     similarity_s3_alias: str | None = field(default_factory=lambda: os.getenv("SIMILARITY_S3_ALIAS") or None)
     similarity_s3_prefix: str = field(default_factory=lambda: os.getenv("SIMILARITY_S3_PREFIX", "signatureai/similarity"))
 
-    # Retraining pipeline trigger (HF webhook -> GitHub Actions repository_dispatch)
+    # Which Celery worker this process is: "inference" loads the models, "pipeline" (retraining orchestrator) does not.
+    worker_role: str = field(default_factory=lambda: os.getenv("WORKER_ROLE", "inference"))
+
+    # Retraining pipeline trigger: HF webhook -> EC2 orchestrator ("ec2", default) or GitHub Actions ("github")
+    retrain_backend: str = field(default_factory=lambda: os.getenv("RETRAIN_BACKEND", "ec2"))
     hf_webhook_secret: str | None = field(default_factory=lambda: os.getenv("HF_WEBHOOK_SECRET") or None)
     hf_dataset_repo: str | None = field(default_factory=lambda: os.getenv("HF_DATASET_REPO") or None)
     github_repo: str | None = field(default_factory=lambda: os.getenv("GITHUB_REPO") or None)  # owner/name
     github_token: str | None = field(default_factory=lambda: os.getenv("GITHUB_TOKEN") or None)
     retrain_mode: str = field(default_factory=lambda: os.getenv("RETRAIN_MODE", "full"))
     retrain_cooldown_seconds: int = field(default_factory=lambda: _int("RETRAIN_COOLDOWN_SECONDS", 1800))
+
+    # EC2 retraining orchestrator (pipeline worker): HF dataset check -> dedup -> Kaggle GPU -> monitor -> hot reload
+    pipeline_queue: str = field(default_factory=lambda: os.getenv("PIPELINE_QUEUE", "pipeline"))
+    pipeline_dir: str = field(default_factory=lambda: os.getenv("PIPELINE_DIR", "/srv/pipeline"))  # kaggle_job.py + notebook
+    pipeline_work_dir: str = field(default_factory=lambda: os.getenv("PIPELINE_WORK_DIR", "/data/pipeline"))
+    pipeline_tick_seconds: int = field(default_factory=lambda: _int("PIPELINE_TICK_SECONDS", 15))
+    pipeline_poll_minutes: int = field(default_factory=lambda: _int("PIPELINE_POLL_MINUTES", 30))  # 0 = webhook only
+    pipeline_debounce_seconds: int = field(default_factory=lambda: _int("PIPELINE_DEBOUNCE_SECONDS", 45))
+    pipeline_max_auto_attempts: int = field(default_factory=lambda: _int("PIPELINE_MAX_AUTO_ATTEMPTS", 2))
+    pipeline_max_run_hours: float = field(default_factory=lambda: _float("PIPELINE_MAX_RUN_HOURS", 12))
+    pipeline_admin_token: str | None = field(default_factory=lambda: os.getenv("PIPELINE_ADMIN_TOKEN") or None)
+    gate_min_test_map50: float = field(default_factory=lambda: _float("GATE_MIN_TEST_MAP50", 0.75))
+    gate_max_regression: float = field(default_factory=lambda: _float("GATE_MAX_REGRESSION", 0.02))
+    hf_token: str | None = field(default_factory=lambda: os.getenv("HF_TOKEN") or None)
+    kaggle_username: str | None = field(default_factory=lambda: os.getenv("KAGGLE_USERNAME") or None)
+    kaggle_kernel_slug: str = field(default_factory=lambda: os.getenv("KAGGLE_KERNEL_SLUG", "signatureai-retrain"))
+    kaggle_secrets_slug: str = field(default_factory=lambda: os.getenv("KAGGLE_SECRETS_SLUG", "signatureai-pipeline-secrets"))
+    kaggle_accelerator: str = field(default_factory=lambda: os.getenv("KAGGLE_ACCELERATOR", "NvidiaTeslaT4"))
 
     # Observability
     logfire_token: str | None = field(default_factory=lambda: os.getenv("LOGFIRE_TOKEN"))

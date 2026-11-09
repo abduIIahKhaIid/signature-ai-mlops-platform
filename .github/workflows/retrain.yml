@@ -1,14 +1,9 @@
-name: Retrain signature detector
+name: Retrain signature detector (manual fallback)
 
-# Triggers
-#  - repository_dispatch: sent by the API's /webhooks/huggingface endpoint when the HF dataset changes
-#  - schedule:            fallback watcher, every 30 min: trains only if HF main has a commit not trained yet
-#  - workflow_dispatch:   manual "Run workflow" button (demo / re-run)
+# The automatic path runs on EC2 (signature_service/app/retrain.py): HF webhook -> pipeline worker -> Kaggle,
+# with the live dashboard at /pipeline. This workflow is only a MANUAL fallback ("Run workflow" button),
+# so the same upload is never trained twice by two systems.
 on:
-  repository_dispatch:
-    types: [hf-dataset-updated]
-  schedule:
-    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -39,9 +34,9 @@ jobs:
       KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
       KERNEL: ${{ secrets.KAGGLE_USERNAME }}/signatureai-retrain
       SECRETS_DATASET: ${{ secrets.KAGGLE_USERNAME }}/signatureai-pipeline-secrets
-      MODE: ${{ github.event.inputs.mode || github.event.client_payload.mode || 'full' }}
-      HF_REVISION: ${{ github.event.inputs.hf_revision || github.event.client_payload.hf_sha || 'main' }}
-      DEPLOY: ${{ github.event_name == 'repository_dispatch' || github.event.inputs.deploy == 'true' }}
+      MODE: ${{ github.event.inputs.mode || 'smoke' }}
+      HF_REVISION: ${{ github.event.inputs.hf_revision || 'main' }}
+      DEPLOY: ${{ github.event.inputs.deploy == 'true' }}
     steps:
       - uses: actions/checkout@v4
 

@@ -39,3 +39,4 @@ keys/
 *.pem
 *.ppk
 id_rsa*
+pipeline-secrets.env

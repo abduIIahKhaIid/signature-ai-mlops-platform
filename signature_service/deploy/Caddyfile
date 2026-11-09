@@ -1,0 +1,6 @@
+# Optional HTTPS front door (docker compose --profile https up -d https).
+# PUBLIC_HOST e.g. 13-239-137-202.sslip.io (resolves to the EC2 IP; Caddy gets a free Let's Encrypt certificate).
+{$PUBLIC_HOST} {
+	encode gzip
+	reverse_proxy api:8000
+}

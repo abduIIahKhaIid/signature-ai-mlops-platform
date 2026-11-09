@@ -122,6 +122,14 @@ jobs:
           push: false
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker
+      - name: Pipeline (retraining orchestrator) image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: signature_service/docker/pipeline.Dockerfile
+          push: false
+          cache-from: type=gha,scope=pipeline
+          cache-to: type=gha,mode=max,scope=pipeline
 
   deploy:
     name: Deploy to EC2 (AWS SSM)

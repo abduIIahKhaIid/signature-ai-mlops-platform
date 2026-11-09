@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignatureAI · Continuous training</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb; --surface-2: #f3f2ee;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834;
+  --good: #0ca30c; --good-text: #006300; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --accent: #2a78d6; --accent-wash: rgba(42,120,214,0.10);
+  --shadow: 0 1px 2px rgba(11,11,11,0.04), 0 4px 16px rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --surface-2: #232321;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --good-text: #0ca30c;
+    --accent: #3987e5; --accent-wash: rgba(57,135,229,0.14); --shadow: none;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19; --surface-2: #232321;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --good-text: #0ca30c;
+  --accent: #3987e5; --accent-wash: rgba(57,135,229,0.14); --shadow: none;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body.viz-root { background: var(--page); color: var(--text-primary);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+.muted { color: var(--text-muted); }
+.secondary { color: var(--text-secondary); }
+.num { font-variant-numeric: tabular-nums; }
+
+header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--page) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+.top-inner { max-width: 1320px; margin: 0 auto; padding: 14px 24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.brand { min-width: 0; }
+.brand { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+.logo { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; }
+.logo svg { width: 20px; height: 20px; }
+.brand h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
+.brand p { margin: 0; font-size: 12.5px; color: var(--text-secondary); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-1); font-size: 12.5px; color: var(--text-secondary); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.dot.good { background: var(--good); } .dot.critical { background: var(--critical); } .dot.warning { background: var(--warning); }
+.dot.live { background: var(--accent); box-shadow: 0 0 0 0 var(--accent); animation: pulse 1.6s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1);
+  color: var(--text-primary); padding: 6px 12px; }
+button:hover { background: var(--surface-2); }
+button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+button.primary:hover { filter: brightness(1.08); }
+button:focus-visible, a:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+main { max-width: 1320px; margin: 0 auto; padding: 20px 24px 60px; display: grid; gap: 16px; }
+.banner { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-1); display: none; }
+.banner.show { display: block; }
+.banner.critical { border-color: color-mix(in srgb, var(--critical) 50%, transparent); }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 18px; min-width: 0; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); margin: 0 0 12px; font-weight: 600; }
+.card h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+
+.hero { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; align-items: start; }
+.hero-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; padding: 4px 10px; border-radius: 8px; background: var(--surface-2); }
+.badge .ic { font-size: 13px; line-height: 1; }
+.badge.good { color: var(--good-text); } .badge.critical { color: var(--critical); } .badge.warning { color: var(--text-primary); }
+.badge.warning .ic { color: #b07a00; } .badge.live { color: var(--accent); }
+.hero h3 { font-size: 22px; margin: 10px 0 2px; letter-spacing: -0.015em; }
+.hero .sub { color: var(--text-secondary); }
+.overall { margin-top: 14px; }
+.track { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.fill { height: 100%; border-radius: 999px; background: var(--accent); transition: width .6s ease; }
+.fill.good { background: var(--good); } .fill.critical { background: var(--critical); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+.kv dt { color: var(--text-muted); } .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.bars { display: grid; gap: 10px; margin-top: 14px; }
+.bar-row .bar-head { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; margin-bottom: 4px; }
+.bar-row .bar-head span:first-child { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.layout { display: grid; grid-template-columns: minmax(330px, 420px) 1fr; gap: 16px; align-items: start; }
+.stack { display: grid; gap: 16px; min-width: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+.steps { list-style: none; margin: 0; padding: 0; }
+.step { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; position: relative; padding-bottom: 14px; }
+.step:not(:last-child)::before { content: ""; position: absolute; left: 12px; top: 24px; bottom: 0; width: 2px; background: var(--grid); }
+.step.done:not(:last-child)::before { background: color-mix(in srgb, var(--good) 45%, var(--grid)); }
+.step .ico { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700;
+  background: var(--surface-2); color: var(--text-muted); border: 2px solid var(--surface-1); position: relative; z-index: 1; }
+.step.done .ico { background: var(--good); color: #fff; }
+.step.failed .ico { background: var(--critical); color: #fff; }
+.step.running .ico { background: var(--accent-wash); color: var(--accent); }
+.step.running .ico::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid transparent;
+  border-top-color: var(--accent); animation: spin 1s linear infinite; }
+.step.skipped .ico { background: transparent; border: 2px dashed var(--axis); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.step .label { font-weight: 550; }
+.step.pending .label, .step.skipped .label { color: var(--text-muted); font-weight: 450; }
+.step .where { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+.step .detail { font-size: 12.5px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.step.failed .detail { color: var(--critical); }
+.step .dur { font-size: 12px; color: var(--text-muted); white-space: nowrap; padding-top: 3px; }
+.group-sep { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin: 4px 0 10px 36px; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+.stat { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.stat .v { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.stat .l { font-size: 12px; color: var(--text-secondary); }
+.stat.flag .v { color: var(--critical); }
+.splits { display: flex; height: 26px; border-radius: 8px; overflow: hidden; gap: 2px; margin: 12px 0 6px; background: var(--surface-1); }
+.splits div { display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 600; min-width: 34px; }
+
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .tt { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 9px; font-size: 12px; box-shadow: var(--shadow); display: none; white-space: nowrap; z-index: 2; }
+.chart .tt strong { font-variant-numeric: tabular-nums; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 6px; }
+.legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.empty { color: var(--text-muted); font-size: 13px; padding: 18px 0; text-align: center; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+td { overflow-wrap: anywhere; }
+th { text-align: left; font-weight: 550; color: var(--text-muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+td { padding: 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+tbody tr.click { cursor: pointer; } tbody tr.click:hover, tbody tr.sel { background: var(--accent-wash); }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); white-space: nowrap; font-weight: 550; }
+.chip.good { color: var(--good-text); } .chip.critical { color: var(--critical); } .chip.live { color: var(--accent); }
+.chip.warning::before { content: "▲"; color: #b07a00; font-size: 9px; }
+.log { max-height: 340px; overflow: auto; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.log .ln { display: grid; grid-template-columns: 64px 56px 1fr; gap: 10px; padding: 2px 0; }
+.log .ln > span:first-child { white-space: nowrap; }
+.log .src { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; padding-top: 2px; }
+.log .src.kaggle { color: #20a2b0; } .log .src.ec2 { color: var(--accent); }
+.log .ln.warning .msg { color: var(--text-primary); } .log .ln.warning .msg::before { content: "▲ "; color: #b07a00; }
+.log .ln.error .msg { color: var(--critical); } .log .ln.error .msg::before { content: "✕ "; }
+pre.tail { background: var(--surface-2); border-radius: 10px; padding: 12px; overflow: auto; max-height: 260px; margin: 10px 0 0; }
+.linkrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.linkrow a { display: inline-flex; gap: 6px; align-items: center; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.linkrow a.disabled { pointer-events: none; color: var(--text-muted); }
+.note { font-size: 12.5px; color: var(--text-secondary); background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+@media (max-width: 1000px) { .hero, .layout, .grid2 { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body class="viz-root">
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c2.5 0 3-9 5.5-9S10 17 12.5 17 15 7 17.5 7 20 13 21 13"/></svg></div>
+      <div><h1>SignatureAI · Continuous training</h1><p>Hugging Face upload → EC2 orchestrator → Kaggle T4 → S3 → live model</p></div>
+    </div>
+    <span class="pill" id="orch"><span class="dot"></span>Orchestrator</span>
+    <span class="pill" id="serving"><span class="dot"></span>Serving —</span>
+    <button id="btn-check" hidden title="Check the Hugging Face repo for a new dataset now">Check now</button>
+    <button id="btn-force" hidden>Retrain anyway</button>
+    <button id="btn-theme" title="Toggle light / dark" aria-label="Toggle light or dark theme">Theme</button>
+  </div>
+</header>
+
+<main>
+  <div class="banner critical" id="conn">Lost connection to the API — retrying…</div>
+  <div class="banner" id="pinned"></div>
+
+  <section class="card hero" aria-live="polite">
+    <div>
+      <div class="hero-status"><span id="run-badge" class="badge">—</span><span class="muted mono" id="run-id"></span></div>
+      <h3 id="run-title">Waiting for data</h3>
+      <div class="sub" id="run-sub"></div>
+      <div class="overall">
+        <div class="bar-head" style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px">
+          <span class="secondary" id="overall-label">Pipeline progress</span><span class="num secondary" id="overall-num"></span></div>
+        <div class="track"><div class="fill" id="overall-fill" style="width:0%"></div></div>
+      </div>
+      <div class="bars" id="live-bars"></div>
+    </div>
+    <dl class="kv" id="run-facts"></dl>
+  </section>
+
+  <div class="layout">
+    <section class="card">
+      <h2>Pipeline<span class="hint">every phase, live</span></h2>
+      <ol class="steps" id="steps"></ol>
+    </section>
+
+    <div class="stack">
+      <div class="grid2">
+        <section class="card"><h2>Dataset<span class="hint">stays on Hugging Face → Kaggle</span></h2><dl class="kv" id="dataset"></dl>
+          <div class="note">No dataset is stored in AWS. A dataset is identified by the SHA-256 of its ZIP: the same content is never trained twice, whatever the file name.</div></section>
+        <section class="card"><h2>Data cleaning &amp; leakage<span class="hint">from the notebook</span></h2><div id="cleaning"><div class="empty">Appears once Kaggle finishes cleaning.</div></div></section>
+      </div>
+
+      <section class="card">
+        <h2>Training<span class="hint" id="train-hint"></span></h2>
+        <div class="grid2">
+          <div><div class="legend" id="loss-legend"></div><div class="chart" id="chart-loss"><div class="empty">Loss curves appear after the first epoch.</div></div></div>
+          <div><div class="legend"><span><i style="background:var(--series-1)"></i>Validation mAP@50</span></div><div class="chart" id="chart-map"><div class="empty">mAP@50 appears after the first epoch.</div></div></div>
+        </div>
+      </section>
+
+      <div class="grid2">
+        <section class="card"><h2>Evaluation<span class="hint">held-out test set</span></h2><div id="evaluation"><div class="empty">After training.</div></div></section>
+        <section class="card"><h2>Validation gate<span class="hint">challenger vs champion, same test set</span></h2><div id="gate"><div class="empty">After evaluation.</div></div></section>
+      </div>
+
+      <section class="card"><h2>Links</h2><div class="linkrow" id="links"></div></section>
+    </div>
+  </div>
+
+  <section class="card" id="failure-card" hidden><h2>Why it failed</h2><div id="failure"></div></section>
+
+  <section class="card"><h2>Event log<span class="hint">EC2 orchestrator + Kaggle notebook</span></h2><div class="log mono" id="log"></div></section>
+
+  <div class="grid2">
+    <section class="card"><h2>Trigger decisions<span class="hint">why a run did or did not start</span></h2>
+      <table><thead><tr><th style="width:74px">When</th><th style="width:132px">Decision</th><th>Details</th></tr></thead><tbody id="decisions"></tbody></table></section>
+    <section class="card"><h2>Run history<span class="hint">click a run to inspect it</span></h2>
+      <table><thead><tr><th style="width:27%">Run</th><th style="width:28%">Result</th><th class="num" style="width:16%">Test mAP@50</th><th>Dataset</th></tr></thead><tbody id="history"></tbody></table></section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+let pinnedRun = null, lastState = null, logStick = true;
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") n.className = v; else if (k === "style") n.style.cssText = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v); else n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return n;
+}
+function svg(tag, attrs, ...kids) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) n.setAttribute(k, v);
+  for (const kid of kids.flat()) if (kid != null) n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return n;
+}
+const fmt4 = (x) => (typeof x === "number" && isFinite(x) ? x.toFixed(4) : "—");
+const fmtN = (x) => (typeof x === "number" ? x.toLocaleString() : "—");
+const short = (s, n = 12) => (s ? String(s).slice(0, n) + (String(s).length > n ? "…" : "") : "—");
+function bytes(b) { if (typeof b !== "number") return "—"; const u = ["B", "KB", "MB", "GB"]; let i = 0; while (b >= 1000 && i < 3) { b /= 1000; i++; } return `${b.toFixed(i ? 1 : 0)} ${u[i]}`; }
+function ts(v) { const t = Date.parse(v); return isNaN(t) ? null : t; }
+function ago(v) { const t = ts(v); if (!t) return "—"; const s = Math.max(0, (Date.now() - t) / 1000); if (s < 60) return `${Math.round(s)}s ago`; if (s < 3600) return `${Math.round(s / 60)} min ago`; if (s < 86400) return `${(s / 3600).toFixed(1)} h ago`; return new Date(t).toLocaleString(); }
+function dur(a, b) { const s = ((b ? ts(b) : Date.now()) - ts(a)) / 1000; if (!isFinite(s) || s < 0) return ""; if (s < 60) return `${Math.round(s)}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`; return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`; }
+function clock(v) { const t = ts(v); return t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }) : ""; }
+
+const RUN_STATUS = {
+  running: ["live", "●", "Running"], deploying: ["live", "●", "Deploying to EC2"],
+  succeeded: ["good", "✓", "New model live"], approved: ["warning", "", "Approved, not deployed"],
+  rejected: ["warning", "", "Gate rejected · served model kept"], failed: ["critical", "✕", "Failed"],
+  succeeded_reload_pending: ["warning", "", "Deployed · reload pending"],
+};
+const DECISION = {
+  started: ["good", "Run started"], skipped_trained: ["", "Already trained"], no_dataset: ["warning", "No dataset ZIP"],
+  deferred: ["live", "Queued after run"], blocked: ["critical", "Blocked"], error: ["critical", "Error"],
+  skipped_failed: ["warning", "Not retried"], webhook: ["live", "Webhook"], manual: ["live", "Dashboard"],
+};
+
+function badge(status) {
+  const [cls, ic, text] = RUN_STATUS[status] || ["", "", status];
+  return el("span", { class: `badge ${cls}` }, ic ? el("span", { class: "ic" }, ic) : (cls === "warning" ? el("span", { class: "ic" }, "▲") : null), text);
+}
+
+// ------------------------------------------------------------------ charts (line, one y-axis each)
+function lineChart(host, xs, series, opts = {}) {
+  host.replaceChildren();
+  const W = 440, H = 190, m = { l: 44, r: 14, t: 10, b: 26 };
+  const all = series.flatMap((s) => s.values).filter((v) => typeof v === "number" && isFinite(v));
+  if (!xs.length || !all.length) { host.append(el("div", { class: "empty" }, opts.empty || "No data yet.")); return; }
+  let lo = opts.min != null ? opts.min : Math.min(...all), hi = opts.max != null ? opts.max : Math.max(...all);
+  if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
+  const pad = (hi - lo) * 0.08; if (opts.min == null) lo -= pad; if (opts.max == null) hi += pad;
+  const x0 = xs[0], x1 = xs[xs.length - 1];
+  const X = (x) => m.l + (x1 === x0 ? (W - m.l - m.r) / 2 : ((x - x0) / (x1 - x0)) * (W - m.l - m.r));
+  const Y = (y) => m.t + (1 - (y - lo) / (hi - lo)) * (H - m.t - m.b);
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": opts.label || "chart" });
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const v = lo + ((hi - lo) * i) / ticks, y = Y(v);
+    root.append(svg("line", { x1: m.l, x2: W - m.r, y1: y, y2: y, stroke: "var(--grid)", "stroke-width": 1 }));
+    root.append(svg("text", { x: m.l - 6, y: y + 4, "text-anchor": "end", "font-size": 11, fill: "var(--text-muted)", class: "num" }, opts.tick ? opts.tick(v) : v.toFixed(2)));
+  }
+  root.append(svg("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, stroke: "var(--axis)", "stroke-width": 1 }));
+  xs.forEach((x) => root.append(svg("text", { x: X(x), y: H - 8, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)", class: "num" }, `ep ${x}`)));
+  for (const s of series) {
+    const pts = xs.map((x, i) => [x, s.values[i]]).filter(([, v]) => typeof v === "number" && isFinite(v));
+    if (pts.length > 1) root.append(svg("path", { d: pts.map(([x, v], i) => `${i ? "L" : "M"}${X(x).toFixed(1)},${Y(v).toFixed(1)}`).join(""),
+      fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    for (const [x, v] of pts) root.append(svg("circle", { cx: X(x), cy: Y(v), r: 4, fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2 }));
+    const [lx, lv] = pts[pts.length - 1] || [];
+    if (lx != null && series.length <= 4) root.append(svg("text", { x: Math.min(X(lx) + 7, W - 2), y: Y(lv) - 7, "font-size": 11, fill: "var(--text-secondary)", "text-anchor": X(lx) > W - 60 ? "end" : "start", class: "num" }, (opts.tick || ((v) => v.toFixed(3)))(lv)));
+  }
+  const cross = svg("line", { y1: m.t, y2: H - m.b, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden" });
+  root.append(cross);
+  const hit = svg("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent", tabindex: 0 });
+  root.append(hit);
+  const tip = el("div", { class: "tt" });
+  host.append(root, tip);
+  const show = (idx) => {
+    const x = xs[idx]; cross.setAttribute("x1", X(x)); cross.setAttribute("x2", X(x)); cross.setAttribute("visibility", "visible");
+    tip.replaceChildren(el("div", { class: "muted" }, `Epoch ${x}`), ...series.map((s) => el("div", {}, el("strong", {}, fmt4(s.values[idx])), " ", el("span", { class: "secondary" }, s.name))));
+    tip.style.display = "block";
+    const px = (X(x) / W) * host.clientWidth; tip.style.left = `${Math.min(px + 12, host.clientWidth - tip.offsetWidth - 4)}px`; tip.style.top = "8px";
+  };
+  const nearest = (evt) => { const r = root.getBoundingClientRect(); const sx = ((evt.clientX - r.left) / r.width) * W; let best = 0; xs.forEach((x, i) => { if (Math.abs(X(x) - sx) < Math.abs(X(xs[best]) - sx)) best = i; }); return best; };
+  hit.addEventListener("pointermove", (e) => show(nearest(e)));
+  hit.addEventListener("pointerleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); });
+  hit.addEventListener("focus", () => show(xs.length - 1));
+  hit.addEventListener("blur", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); });
+}
+
+function gateChart(host, gate, result, cfg) {
+  host.replaceChildren();
+  const champ = gate.baseline_test_map50, chal = result.test_map50;
+  const floor = gate.floor ?? cfg.gate_floor, maxDrop = gate.max_regression ?? cfg.gate_max_regression;
+  const W = 440, rowH = 34, m = { l: 118, r: 52, t: 8 }, H = m.t + rowH * 2 + 26;
+  const X = (v) => m.l + Math.max(0, Math.min(1, v)) * (W - m.l - m.r);
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Gate: challenger vs champion test mAP@50" });
+  [0, 0.25, 0.5, 0.75, 1].forEach((v) => {
+    root.append(svg("line", { x1: X(v), x2: X(v), y1: m.t, y2: m.t + rowH * 2, stroke: "var(--grid)" }));
+    root.append(svg("text", { x: X(v), y: H - 6, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)", class: "num" }, v.toFixed(2)));
+  });
+  const rows = [["Champion (served)", champ, "var(--text-muted)"], ["Challenger (new)", chal, "var(--series-1)"]];
+  rows.forEach(([name, v, color], i) => {
+    const y = m.t + i * rowH + 9;
+    root.append(svg("text", { x: m.l - 8, y: y + 11, "text-anchor": "end", "font-size": 12, fill: "var(--text-secondary)" }, name));
+    if (typeof v === "number" && isFinite(v)) {
+      root.append(svg("rect", { x: m.l, y, width: Math.max(4, X(v) - m.l), height: 14, rx: 4, fill: color }));
+      root.append(svg("text", { x: X(v) + 6, y: y + 11, "font-size": 12, fill: "var(--text-primary)", "font-weight": 600, class: "num" }, v.toFixed(4)));
+    } else root.append(svg("text", { x: m.l, y: y + 11, "font-size": 12, fill: "var(--text-muted)" }, "no served model to compare"));
+  });
+  if (typeof floor === "number") {
+    root.append(svg("line", { x1: X(floor), x2: X(floor), y1: m.t - 4, y2: m.t + rowH * 2, stroke: "var(--critical)", "stroke-width": 1.5, "stroke-dasharray": "4 3" }));
+    root.append(svg("text", { x: X(floor) + 4, y: m.t + 6, "font-size": 10.5, fill: "var(--critical)" }, `floor ${floor}`));
+  }
+  if (typeof champ === "number" && typeof maxDrop === "number") {
+    const lim = champ - maxDrop;
+    root.append(svg("line", { x1: X(lim), x2: X(lim), y1: m.t + rowH - 2, y2: m.t + rowH * 2, stroke: "var(--text-secondary)", "stroke-width": 1.5, "stroke-dasharray": "2 2" }));
+  }
+  const passed = gate.passed;
+  const status = result.status;
+  const verdict = el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap" },
+    passed ? el("span", { class: "chip good" }, "✓ Passed") : el("span", { class: "chip critical" }, "✕ Rejected"),
+    el("span", { class: "secondary" }, status === "deployed" ? `deployed to alias “${result.deploy_alias || cfg.deploy_alias}”` : passed ? "approved, not deployed" : (gate.reasons || []).join("; ")));
+  const rule = el("div", { class: "muted", style: "font-size:12px;margin-top:6px" },
+    `Rule: test mAP@50 ≥ ${floor} and not more than ${maxDrop} below the served model (dotted line), both scored on this run's test set.`);
+  host.append(root, verdict, rule);
+}
+
+// ------------------------------------------------------------------ render
+function renderTop(state) {
+  const o = state.orchestrator || {};
+  $("orch").replaceChildren(el("span", { class: `dot ${o.online ? "good" : "critical"}` }), o.online ? `Orchestrator online` : "Orchestrator offline");
+  $("orch").title = `last heartbeat: ${o.last_heartbeat ? ago(o.last_heartbeat) : "never"} · backend ${o.backend}`;
+  const sv = state.serving || {}, w = sv.worker || {};
+  const ver = w.detector_version || (sv.alias || {}).version;
+  $("serving").replaceChildren(el("span", { class: `dot ${w.detector_version ? "good" : "warning"}` }), "Serving ", el("span", { class: "mono" }, short(ver, 30)));
+  $("serving").title = `workers: ${w.detector_version || "not reachable"} · alias ${sv.alias_name || ""}: ${(sv.alias || {}).version || "—"} · checked ${ago(sv.checked_at)}`;
+  const admin = state.config && state.config.admin_enabled;
+  $("btn-check").hidden = !admin; $("btn-force").hidden = !admin;
+}
+
+function renderHero(state, run) {
+  const facts = $("run-facts"); facts.replaceChildren();
+  const add = (k, v) => facts.append(el("dt", {}, k), el("dd", {}, v));
+  const bars = $("live-bars"); bars.replaceChildren();
+  if (!run) {
+    $("run-badge").replaceWith(Object.assign(el("span", { id: "run-badge", class: "badge" }, "Idle"), {}));
+    $("run-id").textContent = "";
+    $("run-title").textContent = "Waiting for a dataset upload";
+    $("run-sub").textContent = `Upload a reviewed dataset ZIP to ${state.config.hf_repo || "the Hugging Face repo"}. The webhook starts the pipeline; a fallback check runs every ${state.config.poll_minutes} min.`;
+    $("overall-fill").style.width = "0%"; $("overall-num").textContent = "";
+    add("Last check", state.last_check ? `${ago(state.last_check.ts)} (${state.last_check.source})` : "—");
+    add("Mode", state.config.mode); add("GPU", state.config.accelerator);
+    return;
+  }
+  const b = badge(run.status); b.id = "run-badge"; $("run-badge").replaceWith(b);
+  $("run-id").textContent = run.id;
+  const phases = state.phases, ph = run.phases;
+  const current = phases.find((p) => ph[p.key] && ph[p.key].status === "running");
+  const failed = phases.find((p) => ph[p.key] && ph[p.key].status === "failed");
+  const done = phases.filter((p) => ["done", "skipped"].includes((ph[p.key] || {}).status)).length;
+  const live = ["running", "deploying"].includes(run.status);
+  $("run-title").textContent = live ? (current ? current.label : "Working…") : failed ? `Failed at: ${failed.label}` : (RUN_STATUS[run.status] || [, , run.status])[2];
+  const r = run.result || {};
+  $("run-sub").textContent = live
+    ? `${run.trigger.source} trigger · ${run.dataset.zip} · running for ${dur(run.created_at)}`
+    : `${run.dataset.zip} · finished ${ago(run.finished_at)} after ${dur(run.created_at, run.finished_at)}` + (r.version ? ` · model ${r.version}` : "");
+  const pct = Math.round((done / phases.length) * 100);
+  const fill = $("overall-fill"); fill.style.width = `${live ? pct : 100}%`;
+  fill.className = `fill ${run.status === "failed" ? "critical" : (!live && run.status === "succeeded") ? "good" : ""}`;
+  $("overall-num").textContent = `${done} / ${phases.length} phases`;
+
+  const L = run.live || {};
+  if (live) {
+    for (const p of (L.progress || []).filter((p) => p.total > 0)) {
+      const rate = p.rate, eta = rate ? (p.total - p.n) / rate : null;
+      const right = `${fmtN(p.n)} / ${fmtN(p.total)}` + (rate ? ` · ${rate.toFixed(2)} it/s` : "") + (eta != null ? ` · ETA ${eta < 60 ? Math.round(eta) + "s" : Math.round(eta / 60) + " min"}` : "");
+      bars.append(el("div", { class: "bar-row" }, el("div", { class: "bar-head" }, el("span", {}, p.desc + (p.postfix ? `  (${p.postfix})` : "")), el("span", { class: "num secondary" }, right)),
+        el("div", { class: "track" }, el("div", { class: "fill", style: `width:${Math.min(100, (p.n / p.total) * 100)}%` }))));
+    }
+  }
+  add("Trigger", `${run.trigger.source}${run.trigger.force ? " (forced)" : ""} · ${ago(run.created_at)}`);
+  add("Mode", `${run.mode} · fine-tune from ${run.served_before || "served model"}`);
+  add("Kaggle", run.kaggle.status ? `${run.kaggle.status}${run.kaggle.version ? ` · v${run.kaggle.version}` : ""}` : "—");
+  if (L.gpu) add("GPU", `${L.gpu.name} · ${L.gpu.allocated_gb} GB in use`);
+  if (L.updated_at && live) add("Notebook heartbeat", ago(L.updated_at));
+  if (L.epochs && L.epochs.length) add("Epoch", `${L.epochs.length} of max ${L.max_epochs || "?"}`);
+  if (r.version) add("New model", el("span", { class: "mono" }, r.version));
+  if (run.served_after) add("Now serving", el("span", { class: "mono" }, run.served_after));
+}
+
+function renderSteps(state, run) {
+  const list = $("steps"); list.replaceChildren();
+  let lastWhere = null;
+  for (const p of state.phases) {
+    const st = run ? (run.phases[p.key] || { status: "pending" }) : { status: "pending" };
+    const group = p.where.includes("Kaggle") ? "Kaggle GPU" : "EC2";
+    if (group !== lastWhere) { list.append(el("li", { class: "group-sep" }, group === "EC2" ? (lastWhere ? "Back on EC2" : "EC2 · orchestrator") : "Kaggle · T4 notebook")); lastWhere = group; }
+    const icon = { done: "✓", failed: "✕", running: "", skipped: "", pending: "" }[st.status] ?? "";
+    const time = st.status === "running" ? dur(st.started_at) : (st.started_at && st.ended_at ? dur(st.started_at, st.ended_at) : "");
+    list.append(el("li", { class: `step ${st.status}` },
+      el("div", { class: "ico", "aria-label": st.status }, icon),
+      el("div", {}, el("div", { class: "label" }, p.label), el("div", { class: "where" }, `${p.where} · ${st.status}`),
+        st.detail ? el("div", { class: "detail" }, st.detail) : null),
+      el("div", { class: "dur num" }, time)));
+  }
+}
+
+function renderDataset(state, run) {
+  const d = $("dataset"); d.replaceChildren();
+  const add = (k, v) => d.append(el("dt", {}, k), el("dd", {}, v));
+  const cfg = state.config;
+  if (!run) { add("Repo", cfg.hf_url ? el("a", { href: cfg.hf_url, target: "_blank", rel: "noopener" }, cfg.hf_repo) : "—"); const lc = state.last_check; if (lc) { add("Last commit", el("span", { class: "mono" }, short(lc.commit, 10))); add("ZIPs found", lc.zips && lc.zips.length ? lc.zips.map((z) => z.path).join(", ") : "none"); } return; }
+  const ds = run.dataset, nb = ((run.live || {}).data || {}).dataset || {};
+  add("Repo", el("a", { href: `https://huggingface.co/datasets/${ds.repo}`, target: "_blank", rel: "noopener" }, ds.repo));
+  add("ZIP", el("span", { class: "mono" }, ds.zip));
+  add("Size", bytes(ds.size_bytes));
+  add("Commit", el("a", { href: ds.url, target: "_blank", rel: "noopener", class: "mono" }, short(ds.commit, 10)));
+  add("Uploaded", ds.committed_at ? `${new Date(ds.committed_at).toLocaleString()}${ds.commit_title ? ` · “${ds.commit_title}”` : ""}` : "—");
+  add("SHA-256", el("span", { class: "mono", title: ds.fingerprint }, short(ds.fingerprint, 16)));
+  add("Integrity", nb.sha256 ? (nb.sha256_verified ? el("span", { class: "chip good" }, "✓ verified on Kaggle") : el("span", { class: "chip" }, "computed on Kaggle")) : el("span", { class: "muted" }, "checked when Kaggle downloads it"));
+  if (ds.other_zips && ds.other_zips.length) add("Ignored ZIPs", ds.other_zips.join(", "));
+}
+
+function renderCleaning(run) {
+  const host = $("cleaning");
+  const s = run && ((run.live || {}).data || {}).dataset_summary;
+  if (!s) { host.replaceChildren(el("div", { class: "empty" }, "Appears once Kaggle finishes cleaning.")); return; }
+  const stat = (v, l, flag) => el("div", { class: `stat ${flag && v > 0 ? "flag" : ""}` }, el("div", { class: "v num" }, fmtN(v)), el("div", { class: "l" }, l));
+  const invalid = (s.source_images ?? 0) - (s.valid_images ?? 0);
+  const fs = s.final_splits || {};
+  const total = ["train", "valid", "test"].reduce((a, k) => a + ((fs[k] || {}).images || 0), 0) || 1;
+  const colors = { train: "var(--series-1)", valid: "#6250d6", test: "#1baf7a" };
+  host.replaceChildren(
+    el("div", { class: "stats" }, stat(s.source_images, "images in ZIP"), stat(invalid, "invalid / bad boxes", true),
+      stat(s.exact_removed, "exact duplicates removed", true), stat(s.exact_cross_split_removed, "train↔test leaks removed", true),
+      stat(s.near_confirmed_pairs, "near-duplicates", true), stat(s.after_leakage_quarantine ?? s.after_exact_dedupe, "clean images")),
+    el("div", { class: "splits", role: "img", "aria-label": "final split" }, ...["train", "valid", "test"].map((k) => el("div", { style: `flex:${(fs[k] || {}).images || 0};background:${colors[k]}`, title: `${k}: ${(fs[k] || {}).images} images, ${(fs[k] || {}).boxes} boxes` }, `${k} ${fmtN((fs[k] || {}).images)}`))),
+    el("div", { class: "secondary", style: "font-size:12.5px;display:flex;gap:10px;flex-wrap:wrap" },
+      s.leakage_gate_passed ? el("span", { class: "chip good" }, "✓ Leakage gate passed") : el("span", { class: "chip critical" }, "✕ Leakage gate failed"),
+      `${fmtN(((fs.train || {}).boxes || 0) + ((fs.valid || {}).boxes || 0) + ((fs.test || {}).boxes || 0))} signature boxes · ${Math.round(((fs.train || {}).images || 0) / total * 100)}/${Math.round(((fs.valid || {}).images || 0) / total * 100)}/${Math.round(((fs.test || {}).images || 0) / total * 100)} split`));
+}
+
+function renderTraining(run) {
+  const eps = (run && run.live && run.live.epochs) || [];
+  const xs = eps.map((e) => e.epoch);
+  $("train-hint").textContent = eps.length ? `${eps.length} epoch${eps.length > 1 ? "s" : ""} · best val mAP@50 ${fmt4(Math.max(...eps.map((e) => e.val_map50 ?? -1)))}` : "";
+  $("loss-legend").replaceChildren(el("span", {}, el("i", { style: "background:var(--series-1)" }), "Train loss"), el("span", {}, el("i", { style: "background:var(--series-2)" }), "Validation loss"));
+  lineChart($("chart-loss"), xs, [{ name: "train loss", color: "var(--series-1)", values: eps.map((e) => e.train_loss) },
+    { name: "val loss", color: "var(--series-2)", values: eps.map((e) => e.val_loss) }], { label: "Loss per epoch", empty: "Loss curves appear after the first epoch." });
+  lineChart($("chart-map"), xs, [{ name: "val mAP@50", color: "var(--series-1)", values: eps.map((e) => e.val_map50) }],
+    { label: "Validation mAP@50 per epoch", min: 0, max: 1, tick: (v) => v.toFixed(2), empty: "mAP@50 appears after the first epoch." });
+}
+
+function renderEval(state, run) {
+  const data = (run && run.live && run.live.data) || {};
+  const r = (run && run.result) || data.result;
+  const tm = data.test_metrics, cal = data.calibration;
+  const host = $("evaluation");
+  if (!tm && !r) { host.replaceChildren(el("div", { class: "empty" }, "After training.")); }
+  else {
+    const stat = (v, l) => el("div", { class: "stat" }, el("div", { class: "v num" }, v), el("div", { class: "l" }, l));
+    host.replaceChildren(el("div", { class: "stats" },
+      stat(fmt4(tm ? tm.map_50 : r.test_map50), "test mAP@50"), stat(fmt4(tm ? tm.map : r.test_map), "test mAP@50:95"),
+      tm ? stat(fmt4(tm.mar_100), "recall (mAR@100)") : null,
+      stat(cal ? cal.threshold : (r && r.recommended_threshold) ?? "—", "detection threshold"),
+      cal ? stat(`${(cal.precision * 100).toFixed(0)}% / ${(cal.recall * 100).toFixed(0)}%`, "precision / recall") : null));
+  }
+  if (r && r.gate) gateChart($("gate"), r.gate, r, state.config);
+  else $("gate").replaceChildren(el("div", { class: "empty" }, "After evaluation."));
+}
+
+function renderLinks(state, run) {
+  const data = (run && run.live && run.live.data) || {}, r = (run && run.result) || {};
+  const link = (label, href) => el("a", { href: href || "#", target: "_blank", rel: "noopener", class: href ? "" : "disabled" }, label, " ↗");
+  $("links").replaceChildren(
+    link("Hugging Face dataset", run ? run.dataset.url : state.config.hf_url),
+    link("Kaggle notebook", (run && run.kaggle.url) || state.config.kaggle_url),
+    link("Comet experiment", data.comet_url || r.comet_url),
+    link("S3 model version", r.s3_model_uri ? `https://s3.console.aws.amazon.com/s3/object/${r.s3_model_uri.replace("s3://", "").replace("/", "?prefix=")}` : null),
+    link("API health", "/health"), link("Model served", "/v1/model"));
+}
+
+function renderFailure(run) {
+  const card = $("failure-card");
+  if (!run || run.status !== "failed") { card.hidden = true; return; }
+  card.hidden = false;
+  $("failure").replaceChildren(el("div", { style: "color:var(--critical);font-weight:550" }, run.error || "failed"),
+    el("div", { class: "secondary", style: "font-size:12.5px;margin-top:4px" }, "The served model was not changed. Fix the cause, then use “Retrain anyway”, or upload a corrected dataset."),
+    run.log_tail ? el("pre", { class: "tail mono" }, run.log_tail) : null);
+}
+
+function renderLog(run) {
+  const box = $("log");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  box.replaceChildren(...(run ? [...run.events].sort((a, b) => (ts(a.ts) || 0) - (ts(b.ts) || 0)) : []).map((e) => el("div", { class: `ln ${e.level}` },
+    el("span", { class: "muted num" }, clock(e.ts)), el("span", { class: `src ${e.source}` }, e.source), el("span", { class: "msg" }, e.message))));
+  if (!run || !run.events.length) box.append(el("div", { class: "muted" }, "No events yet."));
+  if (atBottom || logStick) { box.scrollTop = box.scrollHeight; logStick = false; }
+}
+
+function renderDecisions(state) {
+  $("decisions").replaceChildren(...(state.decisions || []).slice(0, 14).map((d) => {
+    const [cls, text] = DECISION[d.decision] || ["", d.decision];
+    return el("tr", {}, el("td", { class: "muted num", title: d.ts }, ago(d.ts)), el("td", {}, el("span", { class: `chip ${cls}` }, text)), el("td", { class: "secondary" }, d.message));
+  }));
+  if (!(state.decisions || []).length) $("decisions").append(el("tr", {}, el("td", { colspan: 3, class: "muted" }, "No triggers yet.")));
+}
+
+function renderHistory(state, run) {
+  $("history").replaceChildren(...(state.runs || []).map((r) => {
+    const [cls, , text] = RUN_STATUS[r.status] || ["", "", r.status];
+    const select = () => { pinnedRun = (r.id === state.active_run_id) ? null : r.id; logStick = true; refresh(); };
+    return el("tr", { class: `click ${run && run.id === r.id ? "sel" : ""}`, tabindex: 0, onclick: select, onkeydown: (e) => { if (e.key === "Enter") select(); } },
+      el("td", {}, el("div", { class: "mono" }, r.id.replace("run-", "")), el("div", { class: "muted", style: "font-size:12px" }, `${r.trigger} · ${ago(r.created_at)}`)),
+      el("td", {}, el("span", { class: `chip ${cls}` }, text), r.version ? el("div", { class: "mono muted", style: "font-size:11.5px;margin-top:3px" }, r.version) : null),
+      el("td", { class: "num" }, fmt4(r.test_map50), r.champion_map50 != null ? el("div", { class: "muted", style: "font-size:11.5px" }, `served ${fmt4(r.champion_map50)}`) : null),
+      el("td", { class: "secondary" }, el("div", {}, r.zip), el("div", { class: "mono muted", style: "font-size:11.5px" }, short(r.fingerprint, 12))));
+  }));
+  if (!(state.runs || []).length) $("history").append(el("tr", {}, el("td", { colspan: 4, class: "muted" }, "No runs yet.")));
+}
+
+function render(state) {
+  lastState = state;
+  const run = state.run;
+  renderTop(state); renderHero(state, run); renderSteps(state, run); renderDataset(state, run); renderCleaning(run);
+  renderTraining(run); renderEval(state, run); renderLinks(state, run); renderFailure(run); renderLog(run);
+  renderDecisions(state); renderHistory(state, run);
+  const pin = $("pinned");
+  if (pinnedRun) { pin.classList.add("show"); pin.replaceChildren(`Viewing past run ${pinnedRun}. `, el("a", { href: "#", onclick: (e) => { e.preventDefault(); pinnedRun = null; logStick = true; refresh(); } }, "Back to live view")); }
+  else pin.classList.remove("show");
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(`/v1/pipeline/state${pinnedRun ? `?run_id=${encodeURIComponent(pinnedRun)}` : ""}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    render(await res.json());
+    $("conn").classList.remove("show");
+  } catch (e) { $("conn").classList.add("show"); }
+}
+
+async function trigger(force) {
+  let token = null;
+  try { token = sessionStorage.getItem("pipelineAdminToken"); } catch (e) {}
+  if (!token) token = prompt("Admin token (PIPELINE_ADMIN_TOKEN from the server .env):");
+  if (!token) return;
+  if (force && !confirm("Retrain on the newest dataset even if it was already trained? This uses Kaggle GPU quota.")) return;
+  const res = await fetch(`/v1/pipeline/check?force=${force}`, { method: "POST", headers: { "X-Admin-Token": token } });
+  if (res.status === 401) { try { sessionStorage.removeItem("pipelineAdminToken"); } catch (e) {} alert("Wrong admin token."); return; }
+  try { sessionStorage.setItem("pipelineAdminToken", token); } catch (e) {}
+  refresh();
+}
+$("btn-check").addEventListener("click", () => trigger(false));
+$("btn-force").addEventListener("click", () => trigger(true));
+$("btn-theme").addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("pipelineTheme", document.documentElement.dataset.theme); } catch (e) {}
+  if (lastState) render(lastState);
+});
+try { const t = localStorage.getItem("pipelineTheme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("log").addEventListener("scroll", () => {});
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

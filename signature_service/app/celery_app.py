@@ -20,9 +20,16 @@ celery_app.conf.update(
     task_time_limit=settings.task_time_limit_seconds,
     task_soft_time_limit=max(1, settings.task_time_limit_seconds - 10),
     broker_connection_retry_on_startup=True,
-    imports=("app.tasks",),
+    imports=("app.tasks", "app.retrain_tasks"),
+    # retraining orchestrator: its own queue + worker, so it never competes with inference
+    task_routes={"pipeline.*": {"queue": settings.pipeline_queue}},
+    beat_schedule={"pipeline-tick": {"task": "pipeline.tick", "schedule": float(settings.pipeline_tick_seconds),
+                                     "options": {"queue": settings.pipeline_queue,
+                                                 "expires": float(settings.pipeline_tick_seconds * 2)}}},
 )
 
 DETECT_TASK = "signature.detect"
 VERIFY_TASK = "signature.verify"
 MODEL_INFO_TASK = "signature.model_info"
+PIPELINE_CHECK_TASK = "pipeline.check"
+PIPELINE_TICK_TASK = "pipeline.tick"

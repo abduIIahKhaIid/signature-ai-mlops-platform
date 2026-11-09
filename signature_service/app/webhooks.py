@@ -1,8 +1,11 @@
-"""Hugging Face dataset webhook -> GitHub Actions retraining workflow.
+"""Hugging Face dataset webhook -> retraining.
 
-HF webhooks cannot send an Authorization header, so they cannot call GitHub directly.
-This endpoint verifies the HF secret, filters the event, de-duplicates it in Redis and then
-fires `repository_dispatch` (event type `hf-dataset-updated`) on the GitHub repo.
+RETRAIN_BACKEND=ec2 (default): the event is queued for the pipeline worker on this EC2 host, which checks the
+    repo for a new (never trained) dataset ZIP and runs the training on Kaggle. Several webhooks within
+    PIPELINE_DEBOUNCE_SECONDS (an upload often makes more than one commit) become one check.
+RETRAIN_BACKEND=github: legacy path, fires `repository_dispatch` on GitHub Actions (.github/workflows/retrain.yml).
+
+HF webhooks cannot send an Authorization header, so the shared secret arrives in `X-Webhook-Secret`.
 """
 from __future__ import annotations
 
@@ -27,6 +30,21 @@ def _redis():
     return redis.Redis.from_url(settings.broker_url)
 
 
+def _enqueue_check(hf_sha: str | None) -> bool:
+    """Queue one dataset check on the pipeline worker; False if one is already queued (debounce window)."""
+    from .celery_app import PIPELINE_CHECK_TASK, celery_app
+    from .retrain import PipelineStore
+
+    store = PipelineStore(_redis())
+    store.decide("webhook", f"Hugging Face webhook: dataset repo changed (commit {(hf_sha or '?')[:8]})",
+                 source="webhook", hf_sha=hf_sha)
+    if not store.claim_webhook_window(settings.pipeline_debounce_seconds):
+        return False
+    celery_app.send_task(PIPELINE_CHECK_TASK, kwargs={"source": "webhook", "hf_sha": hf_sha},
+                         queue=settings.pipeline_queue, countdown=settings.pipeline_debounce_seconds)
+    return True
+
+
 def _dispatch_to_github(hf_repo: str, hf_sha: str | None) -> int:
     body = json.dumps({"event_type": "hf-dataset-updated",
                        "client_payload": {"hf_repo": hf_repo, "hf_sha": hf_sha or "main",
@@ -44,7 +62,8 @@ def _dispatch_to_github(hf_repo: str, hf_sha: str | None) -> int:
 
 @router.post("/huggingface", status_code=202, summary="Hugging Face dataset update -> retraining")
 async def huggingface_webhook(request: Request, x_webhook_secret: str | None = Header(default=None)):
-    if not (settings.hf_webhook_secret and settings.github_repo and settings.github_token):
+    github = settings.retrain_backend == "github"
+    if not settings.hf_webhook_secret or (github and not (settings.github_repo and settings.github_token)):
         raise HTTPException(503, "retraining webhook is not configured on this server")
     if not x_webhook_secret or not hmac.compare_digest(x_webhook_secret, settings.hf_webhook_secret):
         raise HTTPException(401, "invalid webhook secret")
@@ -62,7 +81,7 @@ async def huggingface_webhook(request: Request, x_webhook_secret: str | None = H
     def ignored(reason: str) -> dict:
         log.info("HF webhook ignored: %s (repo=%s scope=%s action=%s)", reason, repo_name,
                  event.get("scope"), event.get("action"))
-        return {"dispatched": False, "reason": reason}
+        return {"accepted": False, "dispatched": False, "reason": reason}
 
     if repo_type != "dataset":
         return ignored("not a dataset repo")
@@ -73,7 +92,14 @@ async def huggingface_webhook(request: Request, x_webhook_secret: str | None = H
     if event.get("action") not in {"update", "create"}:
         return ignored(f"action {event.get('action')!r}")
 
-    # One training per dataset commit, and at most one per cooldown window (many quick pushes -> one run).
+    if not github:
+        queued = await run_in_threadpool(_enqueue_check, head_sha)
+        log.info("HF webhook accepted for %s@%s (check %s)", repo_name, head_sha, "queued" if queued else "already queued")
+        return {"accepted": True, "backend": "ec2", "hf_repo": repo_name, "hf_sha": head_sha,
+                "check": "queued" if queued else "already queued (debounce)",
+                "note": "the pipeline worker checks for a new, never-trained dataset ZIP; see /pipeline"}
+
+    # legacy GitHub backend: one dispatch per commit and per cooldown window
     def claim() -> str | None:
         r = _redis()
         if head_sha and not r.set(f"retrain:sha:{head_sha}", 1, nx=True, ex=7 * 24 * 3600):
@@ -87,5 +113,5 @@ async def huggingface_webhook(request: Request, x_webhook_secret: str | None = H
         return ignored(reason)
     status = await run_in_threadpool(_dispatch_to_github, repo_name, head_sha)
     log.info("retraining dispatched to GitHub %s for %s@%s (HTTP %s)", settings.github_repo, repo_name, head_sha, status)
-    return {"dispatched": True, "hf_repo": repo_name, "hf_sha": head_sha, "github_repo": settings.github_repo,
-            "mode": settings.retrain_mode}
+    return {"accepted": True, "dispatched": True, "backend": "github", "hf_repo": repo_name, "hf_sha": head_sha,
+            "github_repo": settings.github_repo, "mode": settings.retrain_mode}

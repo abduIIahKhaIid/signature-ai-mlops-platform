@@ -1,0 +1,8 @@
+# Only used by builds whose context is the repo root (docker/pipeline.Dockerfile).
+# Allow-list: never send datasets, notebooks with outputs or node_modules to the Docker daemon.
+*
+!signature_service/app
+!signature_service/requirements-pipeline.txt
+!pipeline/kaggle_job.py
+!pipeline/train_pipeline.ipynb
+**/__pycache__

@@ -1,5 +1,5 @@
 # Single-host deployment (laptop or one EC2 instance):
-#   docker compose up -d --build
+#   docker compose up -d --build              # api + inference worker + pipeline orchestrator + redis
 #   docker compose up -d --scale worker=3     # more inference capacity
 services:
   redis:
@@ -38,7 +38,37 @@ services:
       redis: {condition: service_healthy}
     restart: unless-stopped
 
+  # Retraining orchestrator: HF webhook/schedule -> dataset check + dedup -> Kaggle GPU -> live dashboard (/pipeline).
+  # No torch, no model, ~150 MB RAM. Exactly ONE replica (it also runs the beat scheduler).
+  pipeline:
+    build: {context: .., dockerfile: signature_service/docker/pipeline.Dockerfile}
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_ROLE: pipeline
+    volumes: [pipeline-data:/data/pipeline]
+    depends_on:
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  # Optional HTTPS (needed only if Hugging Face refuses an http:// webhook URL). Needs ports 80 + 443 open.
+  #   PUBLIC_HOST=13-239-137-202.sslip.io in .env, then: docker compose --profile https up -d https
+  https:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    ports: ["80:80", "443:443"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [api]
+    restart: unless-stopped
+
 volumes:
+  caddy-data:
+  pipeline-data:
   redis-data:
   uploads:
   model-cache:

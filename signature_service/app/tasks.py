@@ -91,6 +91,9 @@ models = ModelHolder()
 
 @worker_process_init.connect
 def _init_worker_process(**_):
+    if settings.worker_role != "inference":  # the pipeline (retraining) worker has no torch and serves no model
+        observability.setup(settings.worker_role)
+        return
     observability.setup("worker")
     models.load()
     models.start_hot_reload()

@@ -15,7 +15,7 @@ else
   echo "APP_VERSION=${SHA}" >> .env
 fi
 
-docker compose up -d --build --remove-orphans api worker
+docker compose up -d --build --remove-orphans api worker pipeline
 
 echo "== waiting for /ready (API up, Redis reachable, worker online with models loaded)"
 for i in $(seq 1 60); do
@@ -36,5 +36,5 @@ done
 
 echo "!! service not ready after 5 minutes"
 docker compose ps
-docker compose logs --tail 60 api worker
+docker compose logs --tail 60 api worker pipeline
 exit 1
