@@ -11,10 +11,12 @@ git push / pull request
    │                          Kaggle job dry-run build, workflow YAML valid
    │     ── docker-build      api + worker images build (layer cache in GitHub)
    │
-   └─ CD (push to main, all CI green, something under signature_service/ changed)
+   └─ CD (push to main, all CI green, something under signature_service/ or pipeline/ changed)
           deploy ── AWS SSM Run Command on the EC2 instance (no SSH key in GitHub, port 22 stays closed):
                     git reset --hard <commit> → deploy/remote_deploy.sh <commit>
-                    → docker compose up -d --build → wait for /ready → /health must report <commit>
+                    → docker compose down (volumes kept) → prune old images/build cache
+                    → build api, worker, pipeline ONE AT A TIME (low memory) → up -d
+                    → wait for /ready → /health must report <commit> → pipeline container running
                  ── verify from outside: $API_URL/health version == pushed commit
 ```
 
@@ -59,5 +61,8 @@ On the server the previous images are still cached, so a rollback deploy takes a
 
 ## Security notes
 * No SSH key or AWS admin key in GitHub; the deploy user is limited to `ssm:SendCommand` on one instance.
-* `.env` (Logfire token, webhook secret…) stays on the server: `git reset --hard` never touches untracked files.
+* `.env` (Logfire token, webhook secret, HF/Kaggle keys…) stays on the server: `git reset --hard` never touches
+  untracked files. It is written once by hand; every later deploy is automatic.
+* The deploy stops the containers before building (memory-friendly on t3.large), so the API is briefly down
+  during a deploy; Redis state and the model cache live in volumes and survive.
 * Upgrade path: replace the deploy user's access key with GitHub OIDC + an IAM role (no long-lived key).
