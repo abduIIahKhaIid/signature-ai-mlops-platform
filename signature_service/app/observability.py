@@ -59,3 +59,9 @@ def span(name: str, **attributes):
     if _logfire is not None:
         return _logfire.span(name, **attributes)
     return contextlib.nullcontext()
+
+
+def log_info(message: str, **attributes) -> None:
+    """Structured log line: Logfire keeps the attributes as queryable columns (queue_wait_ms, inference_ms, ...)."""
+    if _logfire is not None:
+        _logfire.info(message, **attributes)

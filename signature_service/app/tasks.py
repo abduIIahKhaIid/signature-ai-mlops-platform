@@ -161,8 +161,12 @@ def detect_signature(self, image_key: str, threshold: float | None = None,
                                 queue_wait_ms=queue_wait_ms if queue_wait_ms is not None else -1):
             image = _read_image(image_key)
             t0 = time.perf_counter()
-            detections = detector.detect(image, threshold)
+            with observability.span("model_inference", model_version=detector.version,
+                                    image_width=image.width, image_height=image.height):
+                detections = detector.detect(image, threshold)
             inference_ms = (time.perf_counter() - t0) * 1000
+            observability.log_info("detect done", inference_ms=round(inference_ms, 1), detections=len(detections),
+                                   queue_wait_ms=queue_wait_ms if queue_wait_ms is not None else -1)
     except Exception as exc:
         _cleanup(self, [image_key], exc)
         raise

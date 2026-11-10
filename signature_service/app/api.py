@@ -137,6 +137,28 @@ async def model():
     return await _respond(result, wait=True, timeout=10)
 
 
+@app.get("/v1/system", summary="Host CPU / RAM and inference queue length (load tests, monitoring)")
+async def system():
+    """Host-wide numbers: inside Docker, /proc/stat and /proc/meminfo describe the whole machine."""
+    def read():
+        import os
+
+        import psutil
+        import redis
+
+        vm = psutil.virtual_memory()
+        out = {"ts": round(time.time(), 3), "cpu_percent": psutil.cpu_percent(interval=0.25), "cpu_count": psutil.cpu_count(),
+               "load_avg_1m": round(os.getloadavg()[0], 2), "mem_used_mb": round((vm.total - vm.available) / 1e6),
+               "mem_total_mb": round(vm.total / 1e6), "mem_percent": vm.percent, "queue_length": None}
+        try:
+            out["queue_length"] = redis.Redis.from_url(settings.broker_url, socket_timeout=1).llen(settings.inference_queue)
+        except Exception:
+            pass
+        return out
+
+    return await run_in_threadpool(read)
+
+
 @app.get("/health", summary="Liveness: the API process is up")
 async def health():
     return {"status": "ok", "version": settings.app_version, "uptime_seconds": round(time.time() - API_STARTED, 1)}

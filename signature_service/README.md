@@ -105,20 +105,25 @@ be followed from HTTP → queue → worker → result. Without a token everythin
 
 ## Stress test and cold start
 
-```bash
-pip install locust requests pillow
-# put ~20 real test-split images in loadtest/images/
-ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> STEPS=1,5,10,20,40 STEP_SECONDS=60 locust -f loadtest/locustfile.py \
-    --host http://<server>:8000 --headless --csv loadtest/results/run1 --html loadtest/results/run1.html
-ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> MODE=async locust -f loadtest/locustfile.py --host http://<server>:8000 --headless -u 20 -r 5 -t 3m
+Full report: [`docs/results/phase9_stress_test.md`](../docs/results/phase9_stress_test.md) (generated, see below).
 
-python scripts/measure_cold_start.py --url http://localhost:8000 --fresh   # includes S3 download
-python scripts/measure_cold_start.py --url http://localhost:8000           # warm restart
+```bash
+pip install locust requests pillow matplotlib
+# 1) load test from your laptop: 1 -> 5 -> 10 -> 20 -> 40 users, 90 s each (~8 min)
+ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> STEPS=1,5,10,20,40 STEP_SECONDS=90 RUN_NAME=ec2_t3large \
+  locust -f loadtest/locustfile.py --host http://13.236.244.226:8000 --headless \
+  --csv loadtest/results/ec2_t3large --html loadtest/results/ec2_t3large.html
+# 2) cold start, ON the EC2 host (stops the worker for about a minute)
+python3 scripts/measure_cold_start.py --fresh      # model cache wiped: includes the S3 download
+python3 scripts/measure_cold_start.py              # warm restart, model cached
+# 3) copy loadtest/results/cold_start_*.json from EC2 next to the run files, then build the report
+python loadtest/report.py --run loadtest/results/ec2_t3large
 ```
 
-Report for each step: requests/s, p50/p95/p99 latency and failure rate. Capacity = the highest
-concurrency where p95 stays under your target (e.g. 2 s) with 0 % failures; repeat with
-`--scale worker=N` to show horizontal scaling.
+The locustfile records every job (end-to-end time, queue wait and inference measured by the worker, worker process)
+and samples `GET /v1/system` (host CPU, RAM, jobs waiting in Redis) every 2 s. `report.py` turns that into per-step
+throughput, p50/p95/p99, failure rate, queue wait, inference, CPU/RAM, the maximum stable concurrency, charts in
+`docs/images/` and a copy of the raw files in `docs/results/stress_data/`.
 
 ## Tests
 

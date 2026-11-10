@@ -1,29 +1,47 @@
-"""Stress test for the deployed platform.
+"""Stress test for the deployed platform (Locust).
 
-Examples (run from signature_service/):
-  # Interactive UI at http://localhost:8089
-  locust -f loadtest/locustfile.py --host http://<server>:8000
+Run from signature_service/ (PowerShell: set each variable with $env:NAME="value" first):
 
-  # Headless step test: 1 -> 5 -> 10 -> 20 -> 40 concurrent users, CSV results for the report
-  ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> STEPS=1,5,10,20,40 STEP_SECONDS=60 locust -f loadtest/locustfile.py \
-      --host http://<server>:8000 --headless --csv loadtest/results/run1 --html loadtest/results/run1.html
-  (without ADMIN_TOKEN the per-IP rate limit answers 429 once you exceed RATE_LIMIT_PER_MINUTE)
+  ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> STEPS=1,5,10,20,40 STEP_SECONDS=90 RUN_NAME=ec2_t3large \
+      locust -f loadtest/locustfile.py --host http://<server>:8000 --headless \
+      --csv loadtest/results/ec2_t3large --html loadtest/results/ec2_t3large.html
+  python loadtest/report.py --run loadtest/results/ec2_t3large        # tables + charts -> docs/results
 
-Use real document images: put some test-split JPG/PNGs in loadtest/images/ (or set IMAGES_DIR).
-If the folder is empty, synthetic images are generated.
+Every simulated user uploads a document, waits for its job to finish (end-to-end: upload -> queue -> worker ->
+result), pauses briefly and repeats. Besides Locust's own CSV/HTML this file writes:
+  <RUN_NAME>_jobs.csv     one row per job: users at that moment, end-to-end ms, server queue wait, inference, worker
+  <RUN_NAME>_system.csv   every 2 s: host CPU %, RAM, load and the number of jobs waiting in Redis (GET /v1/system)
+  <RUN_NAME>_meta.json    settings of the run
+
+ADMIN_TOKEN: the API limits jobs per IP (RATE_LIMIT_PER_MINUTE); a load test identifies itself with the admin token.
+IMAGES_DIR: real test-split document images (JPG/PNG) give realistic numbers; synthetic pages are used if it is empty.
+VERIFY_WEIGHT: share of /v1/verify jobs (default 0 = detection only, the cleanest images-per-second number).
 """
 from __future__ import annotations
 
+import csv
 import io
+import json
 import os
 import random
 import time
 from pathlib import Path
 
+import gevent
 from locust import HttpUser, LoadTestShape, between, events, task
 
-IMAGES_DIR = Path(os.getenv("IMAGES_DIR", Path(__file__).parent / "images"))
-MODE = os.getenv("MODE", "sync")  # sync: ?wait=true | async: submit then poll /v1/jobs
+HERE = Path(__file__).parent
+IMAGES_DIR = Path(os.getenv("IMAGES_DIR", HERE / "images"))
+RESULTS_DIR = Path(os.getenv("RESULTS_DIR", HERE / "results"))
+RUN_NAME = os.getenv("RUN_NAME", "stress")
+VERIFY_WEIGHT = int(os.getenv("VERIFY_WEIGHT", "0"))
+SYNC_WAIT = float(os.getenv("SYNC_WAIT", "25"))  # server waits up to this long, then the client polls
+JOB_TIMEOUT = float(os.getenv("JOB_TIMEOUT", "180"))
+THINK = tuple(float(x) for x in os.getenv("THINK", "0.5,1.5").split(","))
+
+JOBS: list[dict] = []
+SYSTEM: list[dict] = []
+META: dict = {}
 
 
 def _load_images() -> list[tuple[str, bytes, str]]:
@@ -52,62 +70,100 @@ def _load_images() -> list[tuple[str, bytes, str]]:
 IMAGES = _load_images()
 
 
-@events.init.add_listener
-def _announce(environment, **_):
-    print(f"[locust] {len(IMAGES)} test images from {IMAGES_DIR} | mode={MODE}")
+def _users(environment) -> int:
+    runner = environment.runner
+    return runner.user_count if runner else 0
+
+
+@events.test_start.add_listener
+def _start(environment, **_):
+    META.update(host=environment.host, run_name=RUN_NAME, started_at=time.time(), images=len(IMAGES),
+                real_images=IMAGES_DIR.is_dir() and any(n for n, _, _ in IMAGES if not n.startswith("synthetic_")),
+                steps=os.getenv("STEPS", ""), step_seconds=int(os.getenv("STEP_SECONDS", "60")),
+                verify_weight=VERIFY_WEIGHT, think_seconds=THINK, admin_token=bool(os.getenv("ADMIN_TOKEN")))
+    print(f"[locust] {len(IMAGES)} images from {IMAGES_DIR} | run {RUN_NAME} | results in {RESULTS_DIR}")
+    gevent.spawn(_sample_system, environment)
+
+
+def _sample_system(environment):
+    import requests
+
+    while environment.runner is None or environment.runner.state not in ("stopped", "stopping"):
+        try:
+            body = requests.get(f"{environment.host}/v1/system", timeout=5).json()
+            body.update(t=time.time(), users=_users(environment))
+            SYSTEM.append(body)
+        except Exception as exc:  # older server without /v1/system: no host metrics, the test still runs
+            SYSTEM.append({"t": time.time(), "users": _users(environment), "error": repr(exc)[:120]})
+        gevent.sleep(2)
+
+
+@events.quitting.add_listener
+def _write(environment, **_):
+    if not JOBS:
+        return
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    META["ended_at"] = time.time()
+    for name, rows in ((f"{RUN_NAME}_jobs.csv", JOBS), (f"{RUN_NAME}_system.csv", SYSTEM)):
+        fields = sorted({k for r in rows for k in r}) if rows else ["t"]
+        with open(RESULTS_DIR / name, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
+    (RESULTS_DIR / f"{RUN_NAME}_meta.json").write_text(json.dumps(META, indent=2))
+    print(f"[locust] wrote {len(JOBS)} jobs and {len(SYSTEM)} system samples to {RESULTS_DIR}")
 
 
 class SignatureUser(HttpUser):
-    wait_time = between(0.5, 1.5)
+    wait_time = between(*THINK)
 
     def on_start(self):
-        # The API limits detect/verify jobs per IP (RATE_LIMIT_PER_MINUTE). A stress test sends far more from one
-        # machine, so it identifies itself with the admin token: ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> locust ...
         token = os.getenv("ADMIN_TOKEN")
         if token:
             self.client.headers["X-Admin-Token"] = token
 
-    @task(9)
+    def _job(self, kind: str, path: str, files: dict) -> None:
+        users = _users(self.environment)
+        started = time.perf_counter()
+        row = {"t_start": time.time(), "users": users, "kind": kind, "ok": False}
+        try:
+            r = self.client.post(f"{path}{'&' if '?' in path else '?'}wait=true&timeout={SYNC_WAIT}", files=files,
+                                 name=f"POST {path.split('?')[0]}")
+            row["http_status"] = r.status_code
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            while r.status_code == 202 and time.perf_counter() - started < JOB_TIMEOUT:  # still queued: poll
+                gevent.sleep(0.5)
+                r = self.client.get(f"/v1/jobs/{body['job_id']}", name="GET /v1/jobs/[id]")
+                body = r.json()
+                row["http_status"] = r.status_code
+            result = body.get("result") or {}
+            timings = result.get("timings_ms") or {}
+            row.update(ok=r.status_code == 200, status=body.get("status"), error=body.get("error") or body.get("detail"),
+                       queue_wait_ms=timings.get("queue_wait"), inference_ms=timings.get("inference"),
+                       worker_ms=timings.get("total_worker"), worker_pid=result.get("worker_pid"), retries=result.get("retries"),
+                       detections=result.get("signature_count"))
+        except Exception as exc:
+            row["error"] = repr(exc)[:200]
+        e2e = (time.perf_counter() - started) * 1000
+        row.update(e2e_ms=round(e2e, 1), t_end=time.time())
+        JOBS.append(row)
+        events.request.fire(request_type="JOB", name=f"{kind} end-to-end", response_time=e2e, response_length=0,
+                            exception=None if row["ok"] else RuntimeError(str(row.get("error") or row.get("http_status"))),
+                            context={})
+
+    @task(10)
     def detect(self):
         name, data, mime = random.choice(IMAGES)
-        if MODE == "async":
-            self._detect_async(name, data, mime)
-            return
-        with self.client.post("/v1/detect?wait=true&timeout=60", files={"file": (name, data, mime)},
-                              name="/v1/detect (sync)", catch_response=True) as r:
-            if r.status_code != 200:
-                r.failure(f"{r.status_code}: {r.text[:200]}")
+        self._job("detect", "/v1/detect", {"file": (name, data, mime)})
 
-    def _detect_async(self, name, data, mime):
-        started = time.perf_counter()
-        r = self.client.post("/v1/detect", files={"file": (name, data, mime)}, name="/v1/detect (submit)")
-        if r.status_code not in (200, 202):
-            return
-        job_id = r.json()["job_id"]
-        while time.perf_counter() - started < 120:
-            body = self.client.get(f"/v1/jobs/{job_id}", name="/v1/jobs/[id]").json()
-            if body["status"] in {"SUCCESS", "FAILURE"}:
-                events.request.fire(request_type="JOB", name="detect end-to-end",
-                                    response_time=(time.perf_counter() - started) * 1000,
-                                    response_length=0, exception=None if body["status"] == "SUCCESS"
-                                    else RuntimeError(body.get("error")))
-                return
-            time.sleep(0.25)
-        events.request.fire(request_type="JOB", name="detect end-to-end", response_time=120000,
-                            response_length=0, exception=TimeoutError("job not finished in 120 s"))
-
-    @task(1)
+    @task(VERIFY_WEIGHT)
     def verify(self):
         (n1, d1, m1), (n2, d2, m2) = random.choice(IMAGES), random.choice(IMAGES)
-        with self.client.post("/v1/verify?wait=true&timeout=60",
-                              files={"reference": (n1, d1, m1), "candidate": (n2, d2, m2)},
-                              name="/v1/verify (sync)", catch_response=True) as r:
-            if r.status_code != 200:
-                r.failure(f"{r.status_code}: {r.text[:200]}")
+        self._job("verify", "/v1/verify", {"reference": (n1, d1, m1), "candidate": (n2, d2, m2)})
 
 
 class StepLoad(LoadTestShape):
-    """Active only when STEPS is set, e.g. STEPS=1,5,10,20,40 STEP_SECONDS=60."""
+    """Active only when STEPS is set, e.g. STEPS=1,5,10,20,40 STEP_SECONDS=90."""
 
     steps = [int(x) for x in os.getenv("STEPS", "").split(",") if x.strip()]
     step_seconds = int(os.getenv("STEP_SECONDS", "60"))

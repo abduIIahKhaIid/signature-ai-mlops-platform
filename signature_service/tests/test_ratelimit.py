@@ -54,3 +54,9 @@ def test_responses_are_gzipped(monkeypatch, tmp_path):
     monkeypatch.setattr(web, "WEB_DIR", tmp_path)
     r = TestClient(app).get("/", headers={"Accept-Encoding": "gzip"})
     assert r.status_code == 200 and r.headers.get("content-encoding") == "gzip"
+
+
+def test_system_endpoint_reports_host_metrics():
+    body = TestClient(app).get("/v1/system").json()
+    assert 0 <= body["cpu_percent"] <= 100 and body["mem_total_mb"] > 0 and body["cpu_count"] >= 1
+    assert "queue_length" in body  # None when Redis is not reachable
