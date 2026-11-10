@@ -59,6 +59,7 @@ MAX_VAL_IMAGES = None
 CALIB_MAX_IMAGES = 1500       # validation images used for threshold calibration
 GATE_MIN_TEST_MAP50 = 0.75    # absolute quality floor on the held-out test set
 GATE_MAX_REGRESSION = 0.02    # allowed drop vs the model currently behind DEPLOY_ALIAS
+GATE_MAX_VAL_TEST_GAP = 0.05  # overfitting check: validation mAP@50 may exceed test mAP@50 by at most this
 AUTO_DEPLOY = False           # move the alias automatically when the gate passes
 DEPLOY_ALIAS = 'latest'       # alias the API workers follow (MODEL_ALIAS in their .env)
 GITHUB_RUN_URL = None
@@ -404,6 +405,28 @@ elif candidate_map50 < GATE_MIN_TEST_MAP50:
     gate_reasons.append(f'test mAP@50 {candidate_map50:.4f} < floor {GATE_MIN_TEST_MAP50}')
 if baseline_map50 is not None and math.isfinite(candidate_map50) and candidate_map50 < baseline_map50 - GATE_MAX_REGRESSION:
     gate_reasons.append(f'regression on the same test set: {candidate_map50:.4f} vs serving {baseline_map50:.4f} (max drop {GATE_MAX_REGRESSION})')
+# OVERFITTING CHECK. The checkpoint was chosen on the validation set; if the unseen test set scores much lower,
+# the model has fitted its training/validation data instead of generalising -> do not deploy it.
+val_test_gap = float(best_map50) - candidate_map50 if math.isfinite(candidate_map50) else float('nan')
+if math.isfinite(val_test_gap) and val_test_gap > GATE_MAX_VAL_TEST_GAP:
+    gate_reasons.append(f'overfitting: validation mAP@50 {float(best_map50):.4f} vs test {candidate_map50:.4f} '
+                        f'(gap {val_test_gap:.4f} > max {GATE_MAX_VAL_TEST_GAP})')
+# Train vs validation LOSS at the selected epoch: reported for transparency, not a gate (training loss is measured on
+# augmented images, so the two are not directly comparable for RT-DETR).
+_rows = list(history) if isinstance(history, list) else []
+_best_row = next((r for r in _rows if r.get('epoch') == best_epoch), _rows[-1] if _rows else {})
+_tl, _vl = _best_row.get('train_loss'), _best_row.get('val_loss')
+_last = _rows[-1] if _rows else {}
+overfitting = {
+    'best_epoch': best_epoch, 'val_map50': float(best_map50), 'test_map50': candidate_map50,
+    'val_test_gap': val_test_gap, 'max_val_test_gap': GATE_MAX_VAL_TEST_GAP,
+    'passed': not (math.isfinite(val_test_gap) and val_test_gap > GATE_MAX_VAL_TEST_GAP),
+    'train_loss': _tl, 'val_loss': _vl,
+    'loss_ratio': (_vl / _tl) if (_tl and _vl and math.isfinite(_tl) and math.isfinite(_vl)) else None,
+    'val_loss_rose_after_best': bool(_last and _vl is not None and _last.get('val_loss') is not None
+                                     and _last.get('epoch') != best_epoch and _last['val_loss'] > _vl),
+}
+print('Overfitting check:', json.dumps(overfitting, default=str))
 GATE_PASSED = not gate_reasons
 GATE_DEPLOYED = False
 if GATE_PASSED and AUTO_DEPLOY:
@@ -428,9 +451,11 @@ PIPELINE_RESULT = {
     'test_map50': candidate_map50, 'test_map': float(test_metrics.get('map', float('nan'))),
     'recommended_threshold': RECOMMENDED_THRESHOLD,
     'gate': {'passed': GATE_PASSED, 'reasons': gate_reasons, 'floor': GATE_MIN_TEST_MAP50,
-             'max_regression': GATE_MAX_REGRESSION, 'baseline_version': baseline_version,
+             'max_regression': GATE_MAX_REGRESSION, 'max_val_test_gap': GATE_MAX_VAL_TEST_GAP,
+             'baseline_version': baseline_version,
              'baseline_test_map50': baseline_map50, 'compared_on': 'this run test set',
              'baseline_test_metrics': baseline_test_metrics},
+    'overfitting': overfitting,
     'hf_zip_filename': HF_ZIP_FILENAME,
     'deploy_alias': DEPLOY_ALIAS if GATE_DEPLOYED else None,
     's3_model_uri': S3_MODEL_URI,
@@ -463,7 +488,9 @@ if comet_experiment:
     comet_experiment.log_other('pipeline_status', PIPELINE_RESULT['status'])
     comet_experiment.log_metrics({'gate_passed': int(GATE_PASSED), 'gate_deployed': int(GATE_DEPLOYED),
                                   'champion_test_map50': baseline_map50 if baseline_map50 is not None else float('nan'),
-                                  'challenger_test_map50': candidate_map50})
+                                  'challenger_test_map50': candidate_map50,
+                                  'val_test_map50_gap': val_test_gap,
+                                  'overfit_loss_ratio': overfitting['loss_ratio'] if overfitting['loss_ratio'] is not None else float('nan')})
     comet_experiment.add_tag(f"gate-{PIPELINE_RESULT['status']}")
 print(json.dumps(PIPELINE_RESULT, indent=2, default=str))
 """

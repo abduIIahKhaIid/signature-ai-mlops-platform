@@ -102,8 +102,20 @@ Even without any webhook, the fallback poll (`PIPELINE_POLL_MINUTES=30`) finds n
 |---|---|
 | Test mAP@50 ≥ floor | `GATE_MIN_TEST_MAP50=0.75` |
 | Not more than X below the served model, both scored on this run's test set | `GATE_MAX_REGRESSION=0.02` |
+| **Overfitting check:** validation mAP@50 (used to pick the checkpoint) − test mAP@50 (never seen) ≤ X | `GATE_MAX_VAL_TEST_GAP=0.05` |
+
+Overfitting is handled at three levels. The checkpoint is chosen by **validation** mAP@50, never by training loss,
+so epochs where the model starts to overfit are not kept. **Early stopping** ends training when validation stops
+improving. The **gate** rejects a model whose test score falls more than `GATE_MAX_VAL_TEST_GAP` below its
+validation score. The training and validation loss at the chosen epoch are shown on the dashboard and logged to
+Comet (`overfit_loss_ratio`). They are not a gate, because training loss is measured on augmented images.
 
 A rejected model still gets an S3 version and a Comet experiment, but the alias (production) does not move.
+
+## Comet
+Retraining runs log to the Comet project **`signature-ai-detection-retrain`** (`COMET_PROJECT` in `.env`), with tags
+`pipeline` and `smoke`/`full` and the run's gate outcome (`gate-deployed` / `gate-rejected`). The first manual Colab
+training stays in `signature-ai-detection`.
 
 ## Tested
 * `signature_service/tests/test_pipeline_orchestrator.py`: no ZIP, new dataset with a pinned notebook, re-upload of the same

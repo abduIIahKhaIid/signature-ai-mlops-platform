@@ -126,7 +126,8 @@ def test_new_dataset_starts_one_pinned_kaggle_run(env):
     # the notebook is pinned to exactly what was checked, and reports live progress for this run
     for expected in ("HF_ZIP_FILENAME = 'export_nov10.zip'", "HF_REVISION = 'commit-1'", f"EXPECTED_ZIP_SHA256 = '{SHA_A}'",
                      f"DATASET_FINGERPRINT = '{SHA_A}'", f"PIPELINE_RUN_ID = '{run['id']}'", "LIVE_PROGRESS = True",
-                     "INIT_FROM = 'latest'", "DEPLOY_ALIAS = 'latest'", "GATE_MIN_TEST_MAP50 = 0.75", "PIPELINE_MODE = 'full'"):
+                     "INIT_FROM = 'latest'", "DEPLOY_ALIAS = 'latest'", "GATE_MIN_TEST_MAP50 = 0.75", "PIPELINE_MODE = 'full'",
+                     "GATE_MAX_VAL_TEST_GAP = 0.05", "COMET_PROJECT = 'signature-ai-detection-retrain'"):
         assert expected in overrides, expected
     assert run["served_before"] == "v-old"
 
@@ -247,3 +248,15 @@ def test_hf_inspector_reads_lfs_sha_and_picks_newest(monkeypatch):
     out = HfInspector("t").inspect("me/sigs")
     assert [z["path"] for z in out["zips"]] == ["new.zip", "old.zip"]
     assert out["zips"][0]["fingerprint"] == SHA_A and out["commit"] == "head"
+
+
+def test_nan_in_a_result_never_breaks_the_dashboard_api(env):
+    """Kaggle's pipeline_result.json can contain NaN (e.g. a loss); the state endpoint must stay valid JSON."""
+    env.hf.upload("a.zip", SHA_A, "commit-1")
+    run_id = env.orch.request_check("webhook")["run_id"]
+    run = env.store.get_run(run_id)
+    run["result"] = {"status": "rejected", "test_map50": float("nan"), "gate": {"baseline_test_metrics": {"loss": float("inf")}}}
+    env.store.save_run(run)
+    state = dashboard_state(env.store, env.cfg, run_id)
+    json.dumps(state, allow_nan=False)  # raises if any NaN/inf is left
+    assert state["run"]["result"]["test_map50"] is None

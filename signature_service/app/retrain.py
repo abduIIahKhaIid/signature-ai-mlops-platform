@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -62,6 +63,17 @@ def utcnow() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def json_safe(x):
+    """NaN / inf are not valid JSON: the dashboard API would fail with a 500. Replace them with None."""
+    if isinstance(x, float):
+        return x if math.isfinite(x) else None
+    if isinstance(x, dict):
+        return {k: json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [json_safe(v) for v in x]
+    return x
+
+
 def _size(n: int) -> str:
     return f"{n / 1e9:.2f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB"
 
@@ -89,7 +101,7 @@ class PipelineStore:
         return json.loads(raw) if raw else None
 
     def _set(self, key: str, value, ex: int | None = None) -> None:
-        self.r.set(key, json.dumps(value, default=str), ex=ex)
+        self.r.set(key, json.dumps(json_safe(value), default=str), ex=ex)
 
     # runs
     def get_run(self, run_id: str) -> dict | None:
@@ -122,7 +134,7 @@ class PipelineStore:
     # trigger decisions (transparency: why a run did or did not start)
     def decide(self, decision: str, message: str, **extra) -> dict:
         entry = {"ts": utcnow(), "decision": decision, "message": message, **extra}
-        self.r.lpush("pipeline:decisions", json.dumps(entry, default=str))
+        self.r.lpush("pipeline:decisions", json.dumps(json_safe(entry), default=str))
         self.r.ltrim("pipeline:decisions", 0, 99)
         log.info("pipeline decision %s: %s", decision, message)
         return entry
@@ -423,6 +435,7 @@ class Orchestrator:
                 kernel=self.kaggle.kernel, mode=run["mode"], hf_repo=ds["repo"], hf_zip=ds["zip"],
                 hf_revision=ds["commit"], secrets_dataset=self.kaggle.secrets_dataset, deploy_alias=self.alias,
                 no_deploy=False, gate_floor=self.cfg.gate_min_test_map50, gate_max_regression=self.cfg.gate_max_regression,
+                gate_max_val_test_gap=self.cfg.gate_max_val_test_gap, comet_project=self.cfg.comet_project,
                 github_run_url=None, run_id=run["id"], dataset_fingerprint=ds["fingerprint"],
                 expected_sha256=ds["sha256"], out=str(build)))
             pushed = self.kaggle.push(build)
@@ -543,7 +556,10 @@ class Orchestrator:
                 set_phase(run, key, "done")
         self.store.clear_failures(run["dataset"]["fingerprint"])
         gate = result.get("gate") or {}
-        summary = f"test mAP@50 {_fmt(result.get('test_map50'))} vs served model {_fmt(gate.get('baseline_test_map50'))}"
+        over = result.get("overfitting") or {}
+        summary = (f"test mAP@50 {_fmt(result.get('test_map50'))} vs served model {_fmt(gate.get('baseline_test_map50'))}; "
+                   f"overfitting check: validation {_fmt(over.get('val_map50'))} vs test {_fmt(over.get('test_map50'))}, "
+                   f"gap {_fmt(over.get('val_test_gap'))} (max {over.get('max_val_test_gap', self.cfg.gate_max_val_test_gap)})")
         if result.get("status") == "deployed":
             run["status"] = "deploying"
             set_phase(run, "hot_reload", "running", f"alias '{self.alias}' → {result.get('version')}; waiting for "
@@ -633,7 +649,7 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
     run = store.get_run(run_id or active or (ids[0] if ids else "")) if (run_id or active or ids) else None
     hb = store.last_heartbeat()
     user = cfg.kaggle_username
-    return {
+    return json_safe({
         "server_time": utcnow(),
         "phases": [{"key": k, "label": label, "where": where} for k, label, where in PHASES],
         "orchestrator": {"backend": "ec2", "online": bool(hb and time.time() - hb < 4 * cfg.pipeline_tick_seconds + 30),
@@ -642,6 +658,7 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
                    "hf_url": f"https://huggingface.co/datasets/{cfg.hf_dataset_repo}" if cfg.hf_dataset_repo else None,
                    "mode": cfg.retrain_mode, "deploy_alias": cfg.model_alias, "poll_minutes": cfg.pipeline_poll_minutes,
                    "gate_floor": cfg.gate_min_test_map50, "gate_max_regression": cfg.gate_max_regression,
+                   "gate_max_val_test_gap": cfg.gate_max_val_test_gap, "comet_project": cfg.comet_project,
                    "kaggle_url": f"https://www.kaggle.com/code/{user}/{cfg.kaggle_kernel_slug}" if user else None,
                    "accelerator": cfg.kaggle_accelerator, "admin_enabled": bool(cfg.pipeline_admin_token),
                    "s3_prefix": f"s3://{cfg.model_s3_bucket}/{cfg.model_s3_prefix.strip('/')}"},
@@ -652,4 +669,4 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
         "serving": store.get_json("serving"),
         "last_check": store.get_json("last_check"),
         "pending_recheck": bool(store.r.exists("pipeline:pending")),
-    }
+    })

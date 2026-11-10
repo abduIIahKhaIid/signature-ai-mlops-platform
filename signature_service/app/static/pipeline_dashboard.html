@@ -364,8 +364,17 @@ function gateChart(host, gate, result, cfg) {
     passed ? el("span", { class: "chip good" }, "✓ Passed") : el("span", { class: "chip critical" }, "✕ Rejected"),
     el("span", { class: "secondary" }, status === "deployed" ? `deployed to alias “${result.deploy_alias || cfg.deploy_alias}”` : passed ? "approved, not deployed" : (gate.reasons || []).join("; ")));
   const rule = el("div", { class: "muted", style: "font-size:12px;margin-top:6px" },
-    `Rule: test mAP@50 ≥ ${floor} and not more than ${maxDrop} below the served model (dotted line), both scored on this run's test set.`);
+    `Rule: test mAP@50 ≥ ${floor}, not more than ${maxDrop} below the served model (dotted line), and validation − test gap ≤ ${gate.max_val_test_gap ?? cfg.gate_max_val_test_gap} (overfitting check).`);
   host.append(root, verdict, rule);
+  const o = result.overfitting;
+  if (o) {
+    const gap = typeof o.val_test_gap === "number" ? o.val_test_gap.toFixed(4) : "—";
+    host.append(el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap" },
+      o.passed ? el("span", { class: "chip good" }, "✓ No overfitting") : el("span", { class: "chip critical" }, "✕ Overfitting"),
+      el("span", { class: "secondary" }, `validation mAP@50 ${fmt4(o.val_map50)} vs test ${fmt4(o.test_map50)} · gap ${gap} (max ${o.max_val_test_gap})`)),
+      el("div", { class: "muted", style: "font-size:12px;margin-top:4px" },
+        `Loss at epoch ${o.best_epoch}: train ${fmt4(o.train_loss)}, validation ${fmt4(o.val_loss)}` + (o.val_loss_rose_after_best ? " · validation loss rose later, earlier checkpoint kept" : "")));
+  }
 }
 
 // ------------------------------------------------------------------ render

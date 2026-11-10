@@ -88,6 +88,10 @@ class Settings:
     pipeline_admin_token: str | None = field(default_factory=lambda: os.getenv("PIPELINE_ADMIN_TOKEN") or None)
     gate_min_test_map50: float = field(default_factory=lambda: _float("GATE_MIN_TEST_MAP50", 0.75))
     gate_max_regression: float = field(default_factory=lambda: _float("GATE_MAX_REGRESSION", 0.02))
+    # Overfitting check: reject if validation mAP@50 exceeds test mAP@50 by more than this
+    gate_max_val_test_gap: float = field(default_factory=lambda: _float("GATE_MAX_VAL_TEST_GAP", 0.05))
+    # Comet project that retraining runs log to (kept separate from the first manual training runs)
+    comet_project: str = field(default_factory=lambda: os.getenv("COMET_PROJECT", "signature-ai-detection-retrain"))
     hf_token: str | None = field(default_factory=lambda: os.getenv("HF_TOKEN") or None)
     kaggle_username: str | None = field(default_factory=lambda: os.getenv("KAGGLE_USERNAME") or None)
     kaggle_kernel_slug: str = field(default_factory=lambda: os.getenv("KAGGLE_KERNEL_SLUG", "signatureai-retrain"))

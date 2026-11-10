@@ -8,6 +8,7 @@ import {
   RUN_STATUS,
   TONE_PILL,
   type Gate,
+  type Overfitting,
   type PhaseDef,
   type PipelineState,
   type Run,
@@ -452,7 +453,46 @@ function GateBars({ gate, result, cfg }: { gate: Gate; result: RunResult; cfg: P
         ))}
       </div>
       <p className="mt-3 text-[13px] text-ink-faint">
-        Test mAP@50, both models scored on this run's test set. To deploy, the new model needs at least {floor} and may be at most {maxDrop} below the current model (dotted line).
+        Test mAP@50, both models scored on this run's test set. To deploy, the new model needs at least {floor}, may be at most {maxDrop} below the current model (dotted line), and must pass the overfitting check below.
+      </p>
+    </div>
+  );
+}
+
+function OverfitCheck({ o, maxGap }: { o: Overfitting; maxGap: number }) {
+  const gap = o.val_test_gap;
+  const max = o.max_val_test_gap ?? maxGap;
+  const passed = o.passed ?? (typeof gap === "number" ? gap <= max : true);
+  const ratio = o.loss_ratio;
+  const rows: [string, string, string?][] = [
+    ["Validation mAP@50", num4(o.val_map50 ?? undefined), `epoch ${o.best_epoch ?? "?"}, used to pick the checkpoint`],
+    ["Test mAP@50", num4(o.test_map50 ?? undefined), "data the model never saw"],
+    ["Gap (validation − test)", typeof gap === "number" ? gap.toFixed(4) : "—", `allowed up to ${max}`],
+  ];
+  return (
+    <div className="mt-5 rounded-lg border border-desk-line p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[16px] font-bold">Overfitting check</h3>
+        {passed ? (
+          <Pill tone="good"><Check className="h-3.5 w-3.5" aria-hidden /> Generalises: gap within {max}</Pill>
+        ) : (
+          <Pill tone="bad"><X className="h-3.5 w-3.5" aria-hidden /> Overfitting: not deployed</Pill>
+        )}
+      </div>
+      <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {rows.map(([label, v, hint]) => (
+          <div key={label} className="rounded-lg bg-desk/60 p-3">
+            <dd className="font-display text-[22px] font-bold leading-none tnum">{v}</dd>
+            <dt className="mt-1 text-[13px] text-ink-soft">{label}</dt>
+            {hint && <div className="text-[12px] text-ink-faint">{hint}</div>}
+          </div>
+        ))}
+      </dl>
+      <p className="mt-3 text-[13px] text-ink-faint">
+        Loss at the chosen epoch: training {num4(o.train_loss ?? undefined)}, validation {num4(o.val_loss ?? undefined)}
+        {typeof ratio === "number" ? ` (validation ÷ training ${ratio.toFixed(2)})` : ""}
+        {o.val_loss_rose_after_best ? ". Validation loss rose in later epochs, which is why an earlier checkpoint was kept." : "."}
+        {" "}Shown for transparency; the deploy decision uses the mAP gap, because training loss is measured on augmented images.
       </p>
     </div>
   );
@@ -494,6 +534,7 @@ function EvaluationCard({ state, run }: { state: PipelineState; run: Run | null 
           {!r.gate.passed && r.gate.reasons?.length ? <p className="mt-2 text-[14px] text-fault">{r.gate.reasons.join("; ")}</p> : null}
         </div>
       ) : null}
+      {r?.overfitting ? <OverfitCheck o={r.overfitting} maxGap={state.config.gate_max_val_test_gap ?? 0.05} /> : null}
     </Section>
   );
 }
@@ -703,7 +744,10 @@ export default function PipelinePage() {
         </span>
         <span>
           <span className="text-ink-faint">Deploy rule </span>
-          <span className="font-bold">mAP@50 ≥ {state.config.gate_floor}, at most {state.config.gate_max_regression} below current</span>
+          <span className="font-bold">
+            mAP@50 ≥ {state.config.gate_floor}, at most {state.config.gate_max_regression} below current
+            {state.config.gate_max_val_test_gap != null ? `, validation − test gap ≤ ${state.config.gate_max_val_test_gap}` : ""}
+          </span>
         </span>
         {state.pending_recheck && <Pill tone="live">A re-check is queued for after this run</Pill>}
         {error && <span className="text-caution">Live updates paused: {error}</span>}

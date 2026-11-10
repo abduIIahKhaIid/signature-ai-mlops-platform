@@ -20,8 +20,22 @@ export interface Gate {
   passed?: boolean;
   floor?: number;
   max_regression?: number;
+  max_val_test_gap?: number;
   baseline_test_map50?: number | null;
   reasons?: string[];
+}
+
+export interface Overfitting {
+  best_epoch?: number;
+  val_map50?: number | null;
+  test_map50?: number | null;
+  val_test_gap?: number | null;
+  max_val_test_gap?: number;
+  passed?: boolean;
+  train_loss?: number | null;
+  val_loss?: number | null;
+  loss_ratio?: number | null;
+  val_loss_rose_after_best?: boolean;
 }
 
 export interface RunResult {
@@ -31,6 +45,7 @@ export interface RunResult {
   test_map?: number;
   recommended_threshold?: number;
   gate?: Gate;
+  overfitting?: Overfitting;
   deploy_alias?: string;
   s3_model_uri?: string;
   comet_url?: string;
@@ -94,7 +109,7 @@ export interface PipelineState {
   orchestrator: { backend: string; online: boolean; last_heartbeat: string | null };
   config: {
     hf_repo?: string; hf_url?: string; mode: string; deploy_alias: string; poll_minutes: number; gate_floor: number;
-    gate_max_regression: number; kaggle_url?: string; accelerator: string; admin_enabled: boolean; s3_prefix: string;
+    gate_max_regression: number; gate_max_val_test_gap?: number; comet_project?: string; kaggle_url?: string; accelerator: string; admin_enabled: boolean; s3_prefix: string;
   };
   active_run_id: string | null;
   run: Run | null;
