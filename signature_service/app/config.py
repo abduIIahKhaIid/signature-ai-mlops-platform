@@ -60,7 +60,7 @@ class Settings:
     model_poll_seconds: int = field(default_factory=lambda: _int("MODEL_POLL_SECONDS", 300))  # 0 disables hot reload
 
     # Inference
-    detection_threshold: float = field(default_factory=lambda: _float("DETECTION_THRESHOLD", 0.5))
+    detection_threshold: float = field(default_factory=lambda: _float("DETECTION_THRESHOLD", 0.3))  # decision threshold
     torch_threads: int = field(default_factory=lambda: _int("TORCH_THREADS", 2))
     enable_similarity: bool = field(default_factory=lambda: _bool("ENABLE_SIMILARITY", True))
     similarity_pretrained: bool = field(default_factory=lambda: _bool("SIMILARITY_PRETRAINED", True))

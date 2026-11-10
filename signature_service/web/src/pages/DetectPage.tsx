@@ -8,7 +8,10 @@ import { DocumentSheet, type SheetBox } from "../components/DocumentSheet";
 import { CropThumb } from "../components/CropThumb";
 import { JobJourney } from "../components/JobJourney";
 
-const REQUEST_FLOOR = 0.1; // ask the server for every box >= 10 %, filter with the slider in the browser
+// Decision threshold: boxes under 30 % confidence are never shown. The server returns everything from 30 % up,
+// and the slider raises the cut-off in the browser without a new request.
+const MIN_THRESHOLD = 0.3;
+const REQUEST_FLOOR = MIN_THRESHOLD;
 
 type Phase = "idle" | "running" | "done" | "error";
 
@@ -60,7 +63,7 @@ export default function DetectPage() {
   const [trace, setTrace] = useState<JobTrace | null>(null);
   const [result, setResult] = useState<DetectResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [threshold, setThreshold] = useState(0.5);
+  const [threshold, setThreshold] = useState(MIN_THRESHOLD);
   const [active, setActive] = useState<string | number | null>(null);
   const [previewBroken, setPreviewBroken] = useState(false);
   const [runId, setRunId] = useState(0);
@@ -194,7 +197,7 @@ export default function DetectPage() {
                   ? hidden > 0
                     ? `${hidden} weaker candidate${hidden > 1 ? "s are" : " is"} below ${Math.round(threshold * 100)}%. Lower the minimum confidence to see ${hidden > 1 ? "them" : "it"}.`
                     : "Nothing on this page looks like a signature to the model. A sharper or larger scan can help."
-                  : `Showing boxes the model is at least ${Math.round(threshold * 100)}% sure about.`}
+                  : `Showing boxes the model is at least ${Math.round(threshold * 100)}% sure about. Highest confidence: ${(shown[0].score * 100).toFixed(1)}%.`}
               </p>
               <div className="mt-4">
                 <label htmlFor="threshold" className="field-label flex justify-between">
@@ -204,7 +207,7 @@ export default function DetectPage() {
                 <input
                   id="threshold"
                   type="range"
-                  min={REQUEST_FLOOR}
+                  min={MIN_THRESHOLD}
                   max={0.95}
                   step={0.05}
                   value={threshold}
