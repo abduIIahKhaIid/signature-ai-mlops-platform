@@ -29,6 +29,8 @@ GitHub Actions never trains a model, and the retraining never touches the code.
                            └── Logfire traces: request → queue wait → inference
 ```
 
+Diagrams of every flow: [`docs/architecture/`](docs/architecture/README.md).
+
 ## Repository layout
 
 ```

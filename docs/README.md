@@ -1,5 +1,8 @@
 # Documentation
 
+## architecture/ — diagrams
+[`architecture/README.md`](architecture/README.md): system architecture, detection request, continuous training, CI/CD, run lifecycle, model registry, validation gate, training notebook.
+
 ## setup/ — how to set things up
 | File | What |
 |---|---|
