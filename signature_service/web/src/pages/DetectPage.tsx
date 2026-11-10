@@ -8,9 +8,9 @@ import { DocumentSheet, type SheetBox } from "../components/DocumentSheet";
 import { CropThumb } from "../components/CropThumb";
 import { JobJourney } from "../components/JobJourney";
 
-// Decision threshold: boxes under 30 % confidence are never shown. The server returns everything from 30 % up,
+// Decision threshold: boxes under 10 % confidence are never shown. The server returns everything from 10 % up,
 // and the slider raises the cut-off in the browser without a new request.
-const MIN_THRESHOLD = 0.3;
+const MIN_THRESHOLD = 0.1;
 const REQUEST_FLOOR = MIN_THRESHOLD;
 
 type Phase = "idle" | "running" | "done" | "error";
