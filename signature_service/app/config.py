@@ -100,6 +100,29 @@ class Settings:
     kaggle_kernel_slug: str = field(default_factory=lambda: os.getenv("KAGGLE_KERNEL_SLUG", "signatureai-retrain"))
     kaggle_secrets_slug: str = field(default_factory=lambda: os.getenv("KAGGLE_SECRETS_SLUG", "signatureai-pipeline-secrets"))
     kaggle_accelerator: str = field(default_factory=lambda: os.getenv("KAGGLE_ACCELERATOR", "NvidiaTeslaT4"))
+    pipeline_stuck_minutes: int = field(default_factory=lambda: _int("PIPELINE_STUCK_MINUTES", 10))
+
+    # Comet: the dashboard reads the run's experiment (metrics, parameters, console, files) through the REST API,
+    # and the same key + workspace are synced to the Kaggle secrets before every run.
+    comet_api_key: str | None = field(default_factory=lambda: os.getenv("COMET_API_KEY") or None)
+    comet_workspace: str | None = field(default_factory=lambda: os.getenv("COMET_WORKSPACE") or None)
+    comet_base_url: str = field(default_factory=lambda: os.getenv("COMET_BASE_URL", "https://www.comet.com"))
+
+    # S3 keys the KAGGLE NOTEBOOK uses (it runs outside AWS, so it cannot use the EC2 role). When these and the
+    # Comet/HF keys are set, the orchestrator refreshes the private Kaggle secrets dataset before every run, so the
+    # secrets live in one place (this .env) and can never drift apart.
+    notebook_aws_access_key_id: str | None = field(default_factory=lambda: os.getenv("NOTEBOOK_AWS_ACCESS_KEY_ID") or None)
+    notebook_aws_secret_access_key: str | None = field(default_factory=lambda: os.getenv("NOTEBOOK_AWS_SECRET_ACCESS_KEY") or None)
+    notebook_aws_region: str | None = field(default_factory=lambda: os.getenv("NOTEBOOK_AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None)
+
+    # Alerts (dashboard toggles decide which ones are sent)
+    alert_webhook_url: str | None = field(default_factory=lambda: os.getenv("ALERT_WEBHOOK_URL") or None)  # Slack/Discord
+    smtp_host: str | None = field(default_factory=lambda: os.getenv("SMTP_HOST") or None)
+    smtp_port: int = field(default_factory=lambda: _int("SMTP_PORT", 587))
+    smtp_user: str | None = field(default_factory=lambda: os.getenv("SMTP_USER") or None)
+    smtp_password: str | None = field(default_factory=lambda: os.getenv("SMTP_PASSWORD") or None)
+    alert_email_to: str | None = field(default_factory=lambda: os.getenv("ALERT_EMAIL_TO") or None)
+    alert_email_from: str | None = field(default_factory=lambda: os.getenv("ALERT_EMAIL_FROM") or None)
 
     # Observability
     logfire_token: str | None = field(default_factory=lambda: os.getenv("LOGFIRE_TOKEN"))

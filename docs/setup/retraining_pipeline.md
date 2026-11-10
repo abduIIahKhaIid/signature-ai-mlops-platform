@@ -53,10 +53,30 @@ KAGGLE_USERNAME=<kaggle username>
 KAGGLE_KEY=<key from kaggle.json>
 PIPELINE_ADMIN_TOKEN=<another long random string>
 RETRAIN_MODE=smoke          # first demo; switch to full for real retraining
+
+# Comet: the dashboard reads the experiment, and the Kaggle secrets are synced from these before every run
+COMET_API_KEY=<key from comet.com → Account settings → API keys>
+COMET_WORKSPACE=abdullah-khalid
+NOTEBOOK_AWS_ACCESS_KEY_ID=<signatureai-colab-uploader access key>
+NOTEBOOK_AWS_SECRET_ACCESS_KEY=<its secret>
+NOTEBOOK_AWS_REGION=ap-southeast-2
+
+# Optional alerts
+ALERT_WEBHOOK_URL=<Slack or Discord incoming webhook>
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=<gmail address>
+SMTP_PASSWORD=<Gmail app password>
+ALERT_EMAIL_TO=<where to send>
 ```
 Then `docker compose up -d --build` (starts the new `pipeline` service too).
 
-### 3. Kaggle secrets dataset (what the notebook uses on Kaggle)
+When `COMET_API_KEY`, `HF_TOKEN` and both `NOTEBOOK_AWS_*` keys are set, the orchestrator re-uploads the Kaggle
+secrets dataset before every run, so `.env` is the only place to change a key. Step 3 is then not needed.
+Before any GPU time is used, the key is checked against Comet. A wrong key or a workspace that does not belong to
+the key blocks the run with a clear message in "Why runs started or not".
+
+### 3. Kaggle secrets dataset (only if you do not set the keys in step 2)
 The notebook needs Comet + S3 write keys + the HF token. They live in a **private** Kaggle dataset
 `<kaggle-user>/signatureai-pipeline-secrets`. Create it once from the EC2 instance:
 ```bash
@@ -72,7 +92,11 @@ Use the `signatureai-colab-uploader` key (read/write on `signatureai/detection/*
 
 ### 4. Open the API port for Hugging Face
 EC2 → Security group → inbound rule **TCP 8000 from 0.0.0.0/0** (HF calls from the internet).
-The dashboard is read-only. Its two buttons need `PIPELINE_ADMIN_TOKEN`.
+Anyone can read the dashboard. Its buttons (check, retrain, stop, roll back, alert toggles) need `PIPELINE_ADMIN_TOKEN`.
+
+### 4b. IAM role of the EC2 instance
+Stop and Roll back write to S3. Update the instance role with `signature_service/deploy/iam-ec2-role-policy.json`
+(statement `PipelineDashboardActions`: `s3:PutObject` on `aliases/*` and `pipeline_runs/control/*` only).
 
 ### 5. Hugging Face webhook
 huggingface.co → Settings → **Webhooks** → Add:
@@ -88,7 +112,18 @@ Even without any webhook, the fallback poll (`PIPELINE_POLL_MINUTES=30`) finds n
 ## Using it
 * Dashboard: `http://<EC2-IP>:8000/pipeline`
 * Upload a reviewed dataset ZIP to the HF repo. Within a minute a run appears and every phase updates live.
-* **Check now** button: same as a webhook. **Retrain anyway**: retrains the newest ZIP even if it was trained.
+* **Check for new data**: same as a webhook. **Retrain anyway**: retrains the newest ZIP even if it was trained.
+* **Stop training**: available once the Kaggle job is submitted and until the gate starts. EC2 writes
+  `pipeline_runs/control/<run>.json`; the notebook reads it every 20 s and stops. Nothing is deployed, no failure is
+  counted, and the dataset is not marked as trained, so it can run again.
+* **Roll back**: points the alias to `previous_version` from `aliases/latest.json` (after checking that model's
+  manifest). Workers switch within `MODEL_POLL_SECONDS`. Nothing is deleted.
+* **Comet panel**: metrics, parameters, console output and files of the run's experiment, read from the Comet API.
+* **Notebook output**: the last 150 lines the Kaggle notebook printed, sent with the heartbeat.
+* **Alerts**: email on deploy / reject / fail / stop, Slack or Discord on deploy / fail / stop, and a stuck-run alert
+  when no heartbeat arrives for `PIPELINE_STUCK_MINUTES`.
+* Also shown: estimated finish time (median step times of earlier runs), Kaggle GPU quota, dataset diff against the
+  last trained dataset, model lineage, decision table, admin audit in the event log, and run comparison.
 * Results: Comet experiment, S3 `versions/<v>/`, `pipeline_runs/<v>.json`, and `GET /v1/model` showing the new version.
 
 ## Modes
@@ -114,21 +149,28 @@ A rejected model still gets an S3 version and a Comet experiment, but the alias 
 
 ## Comet
 Retraining runs log to the Comet project **`signature-ai-detection-retrain`** (`COMET_PROJECT` in `.env`), with tags
-`pipeline` and `smoke`/`full` and the run's gate outcome (`gate-deployed` / `gate-rejected`). The first manual Colab
-training stays in `signature-ai-detection`.
+`pipeline` and `smoke`/`full` and the run's gate outcome (`gate-deployed` / `gate-rejected`), in workspace
+`COMET_WORKSPACE`. The first manual Colab training stays in `signature-ai-detection`.
+
+If experiments do not appear: the notebook's "Comet preflight" cell now fails the run at the start with the reason
+(invalid key, or a workspace the key cannot use). Before this check, a bad key let `comet_ml.start()` fall back to an
+offline experiment silently, which is why nothing was saved.
 
 ## Tested
 * `signature_service/tests/test_pipeline_orchestrator.py`: no ZIP, new dataset with a pinned notebook, re-upload of the same
   content, webhook during a run, stale Kaggle status, live-progress merge, gate deploy plus hot reload, Kaggle error with log,
   auto-retry limit, missing config.
 * `pipeline/mock/run_mock_orchestrator.py`: the whole system on CPU (real API, Redis, orchestrator, notebook; fake HF, S3 and Kaggle).
-  It runs 4 scenarios and takes dashboard screenshots.
+  It runs 6 scenarios (no dataset, deploy, duplicate skipped, stop from the dashboard, gate rejection, roll back) and
+  takes dashboard screenshots.
 * `pipeline/mock/run_mock_pipeline.py`: all notebook cells, including dirty-data cleaning checks.
 
 ## Files
 * `signature_service/app/retrain.py`: the orchestrator (dataset check, dedup, Kaggle, monitoring, dashboard state).
 * `signature_service/app/retrain_tasks.py`: the Celery tasks `pipeline.check` and `pipeline.tick`.
-* `signature_service/app/pipeline_api.py` and `app/static/pipeline_dashboard.html`: the dashboard.
+* `signature_service/app/pipeline_api.py`: state and admin endpoints; `web/src/pages/PipelinePage.tsx`: the dashboard
+  (`app/static/pipeline_dashboard.html` is the fallback when the React build is missing).
+* `signature_service/app/comet_client.py` and `app/alerts.py`: Comet REST reader and alert channels.
 * `signature_service/app/webhooks.py`: HF webhook to the pipeline queue.
 * `signature_service/docker/pipeline.Dockerfile`: the pipeline container (no torch).
 * `pipeline/train_pipeline.ipynb`: generated by `make_pipeline_notebook.py` from `notebooks/01_detection_training_colab.ipynb`.

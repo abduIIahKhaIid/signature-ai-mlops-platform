@@ -8,7 +8,9 @@
 Scenario:  1) webhook with an empty repo  -> "no dataset"
            2) upload dataset A            -> run 1: clean, train, evaluate, gate deploys, workers hot-reload
            3) re-upload A under a new name -> "already trained", no Kaggle run
-           4) upload dataset B, strict gate -> run 2: gate rejects, served model kept
+           4) upload dataset C, press Stop    -> run 2 stops safely, nothing deployed, C not marked trained
+           5) upload dataset B, strict gate -> run 3: gate rejects, served model kept
+           6) Roll back                     -> alias returns to the model served before run 1
 Screenshots of the dashboard are saved at each step.
 
 Usage: python pipeline/mock/run_mock_orchestrator.py <repo_root> <screenshot_dir>
@@ -54,6 +56,7 @@ os.environ.update({
     "PIPELINE_DIR": str(REPO / "pipeline"), "PIPELINE_WORK_DIR": str(WORK / "runs"), "RETRAIN_MODE": "smoke",
     "PIPELINE_TICK_SECONDS": "3", "PIPELINE_POLL_MINUTES": "0", "MODEL_POLL_SECONDS": "15",
     "GATE_MIN_TEST_MAP50": "0.0", "GATE_MAX_REGRESSION": "1.0", "LOGFIRE_TOKEN": "",
+    "COMET_API_KEY": "mock", "COMET_WORKSPACE": "mock-ws", "MOCK_COMET_DUMP": str(WORK / "comet"),
     "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
 })
 sys.path.insert(0, str(REPO / "signature_service"))
@@ -161,13 +164,40 @@ def probe():
     return {"detector_version": served["version"], "similarity_version": "v20261109T202146Z-577f3f2a"}
 
 
+# ------------------------------------------------------------------ fake Comet REST API (reads what the fake comet_ml logged)
+class FolderComet:
+    def workspaces(self):
+        return ["mock-ws"]
+
+    def experiment(self, key):
+        f = WORK / "comet" / f"{key}.json"
+        if not f.exists():
+            return {"metrics": [], "params": {}, "console": [], "assets": []}
+        log = json.loads(f.read_text())
+        series: dict[str, list] = {}
+        for step, d in log["metrics"]:
+            for k, v in d.items():
+                if isinstance(v, (int, float)):
+                    series.setdefault(k, []).append((step, v))
+        metrics = [{"name": k, "latest": v[-1][1], "max": max(x for _, x in v), "min": min(x for _, x in v),
+                    "step": v[-1][0], **({"history": [x for _, x in v][-50:]} if k in ("train_loss", "val_loss", "val_map50") else {})}
+                   for k, v in sorted(series.items())]
+        return {"metrics": metrics, "params": {k: str(v) for k, v in log["parameters"].items()},
+                "console": ["(mock) Comet captures the notebook's stdout here"],
+                "assets": [{"name": a, "type": "asset", "size": None} for a in log["assets"]]}
+
+
 hf = FolderHf()
 store = retrain.PipelineStore(redis.Redis.from_url(settings.broker_url))
-orch = retrain.Orchestrator(settings, store, s3, hf, SubprocessKaggle(hf), probe)
+orch = retrain.Orchestrator(settings, store, s3, hf, SubprocessKaggle(hf), probe, comet=FolderComet())
 
 
 # Celery stand-in: the API's send_task("pipeline.check", countdown=..) runs the orchestrator after the countdown
 def fake_send_task(name, kwargs=None, countdown=0, **_):
+    if name != "pipeline.check":
+        # inference tasks (e.g. /v1/model from the page header) have no worker in this mock
+        return type("Result", (), {"id": "mock-task", "state": "PENDING", "result": None, "ready": lambda self: False})()
+
     def run():
         time.sleep(countdown or 0)
         orch.request_check(**(kwargs or {}))
@@ -260,21 +290,58 @@ try:
     assert s["decisions"][0]["decision"] == "skipped_trained" and orch.kaggle.version == pushes_before
     timeline.append(("re-upload A (new name)", s["decisions"][0]["decision"], s["decisions"][0]["message"]))
     shot("04_reupload_skipped", full=False)
-    page.locator("text=Trigger decisions").scroll_into_view_if_needed()
+    page.locator("text=Why runs started or not").scroll_into_view_if_needed()
     page.wait_for_timeout(500)
     page.screenshot(path=str(SHOTS / "04b_decisions.png"), full_page=False)
 
-    # 4) different dataset B with the real gate floor -> rejected, served model kept
+    # 4) dataset C, then Stop from the dashboard while it trains
+    zip_c = WORK / "src_c.zip"
+    make_dataset_zip(zip_c, seed=42, dirty=False)
+    webhook(hf.upload(zip_c, "signature_dataset_stopme.zip"))
+    s = wait_for(lambda s: s["run"] and s["run"]["id"] != run1["id"] and s["run"]["phases"]["training"]["status"] == "running",
+                 300, 1, "run2 training")
+    run2_id = s["run"]["id"]
+    page.evaluate("window.scrollTo(0,0)")
+    page.wait_for_timeout(3500)
+    page.get_by_role("button", name="Stop training").click()
+    page.wait_for_timeout(400)
+    page.screenshot(path=str(SHOTS / "06_stop_dialog.png"), full_page=False)
+    page.fill("#admin-token", "admin")
+    page.get_by_role("button", name="Stop run").click()
+    s = wait_for(lambda s: s["run"] and s["run"]["id"] == run2_id and s["run"]["status"] not in ("running", "deploying"),
+                 600, 2, "run2 stop")
+    assert s["run"]["status"] == "stopped", s["run"]["status"]
+    timeline.append(("upload C + Stop", s["run"]["status"], f"by {s['run'].get('stop_requested_by')}; serving {s['serving']['alias']['version']}"))
+    page.evaluate("window.scrollTo(0,0)")
+    shot("07_run2_stopped")
+
+    # 5) different dataset B with the real gate floor -> rejected, served model kept
     orch.cfg = dataclasses.replace(settings, gate_min_test_map50=0.75, gate_max_regression=0.02)
     zip_b = WORK / "src_b.zip"
     make_dataset_zip(zip_b, seed=99, dirty=False)
     webhook(hf.upload(zip_b, "signature_dataset_v2.zip"))
-    s = wait_for(lambda s: s["run"] and s["run"]["id"] != run1["id"] and s["run"]["status"] not in ("running", "deploying"),
-                 900, 3, "run2 end")
-    run2 = s["run"]
-    timeline.append(("upload B (strict gate)", run2["status"], "; ".join(run2["result"]["gate"]["reasons"])))
+    s = wait_for(lambda s: s["run"] and s["run"]["id"] not in (run1["id"], run2_id) and s["run"]["status"] not in ("running", "deploying"),
+                 900, 3, "run3 end")
+    run3 = s["run"]
+    timeline.append(("upload B (strict gate)", run3["status"], "; ".join(run3["result"]["gate"]["reasons"])))
     page.evaluate("window.scrollTo(0,0)")
-    shot("05_run2_rejected")
+    shot("05_run3_rejected")
+
+    # history compare (tick run 1 and run 3)
+    boxes = page.locator("input[aria-label^='Compare']")
+    boxes.nth(0).check(); boxes.nth(2).check()
+    page.locator("th", has_text="Compared").scroll_into_view_if_needed()
+    page.wait_for_timeout(600)
+    page.screenshot(path=str(SHOTS / "08_compare.png"), full_page=False)
+
+    # 6) roll back through the API -> alias goes back to the model served before run 1
+    before = state()["serving"]["alias"]["version"]
+    r = api.post("/v1/pipeline/rollback", headers={"X-Admin-Token": "admin"})
+    print("rollback ->", r.status_code, r.json())
+    after = json.loads(s3.get_object(Bucket=BUCKET, Key=f"{PREFIX}/aliases/latest.json")["Body"].read())
+    timeline.append(("roll back", r.status_code, f"{before} -> {after['version']} (stage {after.get('stage')})"))
+    page.evaluate("window.scrollTo(0,0)")
+    shot("09_after_rollback")
     final = state()
     (SHOTS / "final_state.json").write_text(json.dumps(final, indent=2, default=str))
 finally:

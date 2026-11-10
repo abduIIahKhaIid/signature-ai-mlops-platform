@@ -168,6 +168,23 @@ class PipelineStore:
     def claim_webhook_window(self, seconds: int) -> bool:
         return bool(self.r.set("pipeline:webhook_window", 1, nx=True, ex=max(1, seconds)))
 
+    # admin actions (stop, rollback, buttons, alert settings): shown in the event log
+    def audit(self, action: str, detail: str, who: str = "dashboard") -> dict:
+        entry = {"ts": utcnow(), "action": action, "detail": detail, "who": who}
+        self.r.lpush("pipeline:audit", json.dumps(entry))
+        self.r.ltrim("pipeline:audit", 0, 99)
+        return entry
+
+    def audit_log(self, limit: int = 30) -> list[dict]:
+        return [json.loads(x) for x in self.r.lrange("pipeline:audit", 0, limit - 1)]
+
+    # stop requests are kept apart from the run record, so the worker's save cannot overwrite them
+    def request_stop(self, run_id: str, who: str) -> None:
+        self._set(f"pipeline:stop:{run_id}", {"at": utcnow(), "by": who}, ex=7 * 24 * 3600)
+
+    def stop_request(self, run_id: str) -> dict | None:
+        return self._get(f"pipeline:stop:{run_id}")
+
     def heartbeat(self) -> None:
         self.r.set("pipeline:heartbeat", time.time())
 
@@ -202,7 +219,7 @@ def set_phase(run: dict, key: str, status: str, detail: str | None = None) -> No
     now = utcnow()
     if status == "running" and phase.get("status") != "running":
         phase["started_at"] = now
-    if status in {"done", "failed", "skipped"}:
+    if status in {"done", "failed", "skipped", "stopped"}:
         phase.setdefault("started_at", now)
         phase["ended_at"] = now
     phase["status"] = status
@@ -212,7 +229,13 @@ def set_phase(run: dict, key: str, status: str, detail: str | None = None) -> No
 
 def run_summary(run: dict) -> dict:
     result = run.get("result") or {}
+    over = result.get("overfitting") or {}
+    start, end = _parse_ts(run.get("created_at")), _parse_ts(run.get("finished_at"))
     return {
+        "mode": run.get("mode"), "best_val_map50": result.get("best_val_map50"), "val_test_gap": over.get("val_test_gap"),
+        "epochs": result.get("epochs_completed"), "duration_seconds": (end - start) if (start and end) else None,
+        "kaggle_version": (run.get("kaggle") or {}).get("version"), "comet_url": result.get("comet_url"),
+        "test_map": result.get("test_map"), "threshold": result.get("recommended_threshold"),
         "id": run["id"], "status": run["status"], "created_at": run["created_at"], "finished_at": run.get("finished_at"),
         "trigger": (run.get("trigger") or {}).get("source"), "zip": (run.get("dataset") or {}).get("zip"),
         "fingerprint": (run.get("dataset") or {}).get("fingerprint"), "version": result.get("version"),
@@ -309,6 +332,17 @@ class KaggleCLI:
             pass
         return "\n".join(text.strip().splitlines()[-max_lines:])
 
+    def quota(self) -> dict | None:
+        """Weekly GPU quota from `kaggle quota -v` (CSV: resource,used,remaining,total,refreshAt)."""
+        r = self._run("quota", "-v", timeout=60)
+        for line in (r.stdout or "").splitlines():
+            cells = [c.strip() for c in line.split(",")]
+            if cells and cells[0].upper() == "GPU" and len(cells) >= 4:
+                hours = lambda v: float(v.rstrip("h") or 0)  # noqa: E731
+                return {"used_hours": hours(cells[1]), "remaining_hours": hours(cells[2]), "total_hours": hours(cells[3]),
+                        "refresh_at": cells[4] if len(cells) > 4 else None}
+        return None
+
     def output(self, dest: Path) -> list[str]:
         dest.mkdir(parents=True, exist_ok=True)
         r = self._run("kernels", "output", self.kernel, "-p", str(dest), "--force", timeout=300)
@@ -320,7 +354,9 @@ class KaggleCLI:
 # ===================================================================== orchestrator
 class Orchestrator:
     def __init__(self, settings, store: PipelineStore, s3, hf: HfInspector, kaggle: KaggleCLI,
-                 probe: Callable[[], dict | None], clock: Callable[[], float] = time.time):
+                 probe: Callable[[], dict | None], clock: Callable[[], float] = time.time, comet=None, notifier=None):
+        self.comet = comet          # CometClient or None (no COMET_API_KEY on the server)
+        self.notifier = notifier    # alerts.Notifier or None
         self.cfg = settings
         self.store = store
         self.s3 = s3
@@ -391,10 +427,14 @@ class Orchestrator:
         problems = self.kaggle.problems()
         if problems:
             return self.store.decide("blocked", "Kaggle is not configured: " + "; ".join(problems), **base)
-        ready, text = self.kaggle.secrets_ready()
-        if not ready:
-            return self.store.decide("blocked", f"Kaggle secrets dataset {self.kaggle.secrets_dataset} is not ready "
-                                                f"({text}). See docs/setup/retraining_pipeline.md, step 'Kaggle secrets'.", **base)
+        comet_problem = self.comet_preflight()
+        if comet_problem:
+            return self.store.decide("blocked", comet_problem, **base)
+        if not self.secrets_sync_values():
+            ready, text = self.kaggle.secrets_ready()
+            if not ready:
+                return self.store.decide("blocked", f"Kaggle secrets dataset {self.kaggle.secrets_dataset} is not ready "
+                                                    f"({text}). See docs/setup/retraining_pipeline.md, step 'Kaggle secrets'.", **base)
 
         dataset = {"repo": repo, "commit": repo_state["commit"], "url": repo_state["url"], "zip": newest["path"],
                    "size_bytes": newest["size"], "sha256": newest["sha256"], "fingerprint": fp,
@@ -423,6 +463,31 @@ class Orchestrator:
         self.store.save_run(run)
         return {"decision": "started", "run_id": run["id"]}
 
+    # ---------------------------------------------------------------- Comet + secrets
+    def comet_preflight(self) -> str | None:
+        """With COMET_API_KEY on EC2: check key + workspace before any GPU time is spent (None = OK)."""
+        if not self.comet:
+            return None
+        try:
+            workspaces = self.comet.workspaces()
+        except Exception as exc:
+            return f"Comet rejected COMET_API_KEY from the server .env ({exc}); fix it before training"
+        ws = self.cfg.comet_workspace
+        if ws and ws not in workspaces:
+            return f"Comet workspace '{ws}' does not belong to this COMET_API_KEY (its workspaces: {', '.join(workspaces) or 'none'})"
+        return None
+
+    def secrets_sync_values(self) -> dict | None:
+        """Secrets for the Kaggle notebook, when the .env has all of them (else the existing dataset is used)."""
+        c = self.cfg
+        values = {"COMET_API_KEY": c.comet_api_key, "COMET_WORKSPACE": c.comet_workspace, "HF_TOKEN": c.hf_token,
+                  "AWS_ACCESS_KEY_ID": c.notebook_aws_access_key_id, "AWS_SECRET_ACCESS_KEY": c.notebook_aws_secret_access_key,
+                  "AWS_REGION": c.notebook_aws_region, "AWS_S3_BUCKET": c.model_s3_bucket}
+        if not all(values[k] for k in ("COMET_API_KEY", "HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                                       "AWS_REGION", "AWS_S3_BUCKET")):
+            return None
+        return {k: v for k, v in values.items() if v}
+
     def _submit(self, run: dict) -> None:
         set_phase(run, "kaggle_submit", "running")
         ds = run["dataset"]
@@ -430,12 +495,18 @@ class Orchestrator:
             sys.path.insert(0, self.cfg.pipeline_dir)
             import kaggle_job
 
+            values = self.secrets_sync_values()
+            if values:
+                kaggle_job.push_secrets(self.kaggle.secrets_dataset, values, wait_seconds=300)
+                event(run, f"Kaggle secrets synced from the server .env ({', '.join(sorted(values))})")
+
             build = Path(self.cfg.pipeline_work_dir) / run["id"] / "kaggle"
             kaggle_job.cmd_build(types.SimpleNamespace(
                 kernel=self.kaggle.kernel, mode=run["mode"], hf_repo=ds["repo"], hf_zip=ds["zip"],
                 hf_revision=ds["commit"], secrets_dataset=self.kaggle.secrets_dataset, deploy_alias=self.alias,
                 no_deploy=False, gate_floor=self.cfg.gate_min_test_map50, gate_max_regression=self.cfg.gate_max_regression,
                 gate_max_val_test_gap=self.cfg.gate_max_val_test_gap, comet_project=self.cfg.comet_project,
+                comet_workspace=self.cfg.comet_workspace,
                 github_run_url=None, run_id=run["id"], dataset_fingerprint=ds["fingerprint"],
                 expected_sha256=ds["sha256"], out=str(build)))
             pushed = self.kaggle.push(build)
@@ -466,6 +537,8 @@ class Orchestrator:
                 except Exception as exc:  # never let one bad poll kill the orchestrator
                     event(run, f"monitor error (will retry): {exc!r}", "warning")
                 self.store.save_run(run)
+                if run["status"] not in {"running", "deploying"}:
+                    self.store.release_active(run["id"])
         else:
             last = self.store.get_json("last_poll") or 0
             if self.store.pop_pending():
@@ -474,6 +547,24 @@ class Orchestrator:
                 self.store.set_json("last_poll", self.clock())
                 self.request_check("schedule", note=f"fallback poll every {self.cfg.pipeline_poll_minutes} min")
         self.refresh_serving()
+        self.refresh_quota()
+
+    def refresh_quota(self) -> None:
+        cached = self.store.get_json("kaggle_quota") or {}
+        if self.clock() - cached.get("checked_epoch", 0) < 600 or not hasattr(self.kaggle, "quota"):
+            return
+        try:
+            q = self.kaggle.quota()
+        except Exception as exc:
+            q = {"error": repr(exc)[:200]}
+        self.store.set_json("kaggle_quota", {**(q or {}), "checked_epoch": self.clock(), "checked_at": utcnow()})
+
+    def notify(self, run: dict | None, kind: str, subject: str, text: str) -> None:
+        if not self.notifier:
+            return
+        sent = self.notifier.send(kind, subject, text)
+        if sent and run is not None:
+            event(run, f"alert sent ({', '.join(sent)}): {subject}")
 
     def refresh_serving(self, force: bool = False) -> None:
         cached = self.store.get_json("serving") or {}
@@ -507,19 +598,71 @@ class Orchestrator:
         if live:
             self._merge_live(run, live)
             k["seen_active"] = True
+        stop = self.store.stop_request(run["id"])
+        if stop and not run.get("stop_requested_at"):
+            run["stop_requested_at"], run["stop_requested_by"] = stop["at"], stop["by"]
+            event(run, f"stop requested from the dashboard by {stop['by']}: the notebook stops at its next check (~20 s)",
+                  "warning", source="admin", ts=stop["at"])
+        self.refresh_comet(run)
+        self.check_stuck(run, live)
 
         pushed = _parse_ts(k.get("pushed_at")) or self.clock()
         if state == "complete" or state in TERMINAL_KAGGLE_ERRORS:
             # right after a push Kaggle may still report the PREVIOUS version's final state: ignore that
             if not k["seen_active"] and self.clock() - pushed < 180:
                 return
+            self.refresh_comet(run, force=True)
             if state == "complete":
                 self._finish(run, live)
+            elif run.get("stop_requested_at"):
+                self._stopped(run)
             else:
                 self._fail(run, f"Kaggle run ended with status '{state}'" + (f": {message}" if message else ""))
             return
         if self.clock() - pushed > self.cfg.pipeline_max_run_hours * 3600:
             self._fail(run, f"no result after {self.cfg.pipeline_max_run_hours} h (Kaggle limit is 12 h)")
+
+    def refresh_comet(self, run: dict, force: bool = False) -> None:
+        """Copy the run's Comet experiment (metrics, params, console, files) into the run record every 30 s."""
+        data = (run.get("live") or {}).get("data") or {}
+        key = data.get("comet_key") or (run.get("result") or {}).get("comet_experiment_key")
+        info = run.setdefault("comet", {})
+        info.update(workspace=data.get("comet_workspace") or self.cfg.comet_workspace,
+                    project=data.get("comet_project") or self.cfg.comet_project, key=key,
+                    url=data.get("comet_url") or (run.get("result") or {}).get("comet_url"))
+        if not self.comet:
+            info["enabled"] = False
+            return
+        info["enabled"] = True
+        if not key or (not force and self.clock() - (info.get("fetched_epoch") or 0) < 30):
+            return
+        try:
+            info.update(self.comet.experiment(key), error=None)
+        except Exception as exc:
+            info["error"] = str(exc)[:300]
+        info["fetched_epoch"], info["fetched_at"] = self.clock(), utcnow()
+
+    def check_stuck(self, run: dict, live: dict | None) -> None:
+        """Alert once when a started notebook has sent no heartbeat for PIPELINE_STUCK_MINUTES."""
+        updated = _parse_ts((live or {}).get("updated_at"))
+        if not updated or run.get("stuck_alerted") or (live or {}).get("status") != "running":
+            return
+        silent = self.clock() - updated
+        if silent > self.cfg.pipeline_stuck_minutes * 60:
+            run["stuck_alerted"] = True
+            msg = f"no heartbeat from the Kaggle notebook for {int(silent // 60)} min (run {run['id']})"
+            event(run, msg, "warning")
+            self.notify(run, "stuck", "Retraining run looks stuck", msg)
+
+    def _stopped(self, run: dict) -> None:
+        for key in PHASE_KEYS:
+            if run["phases"][key]["status"] == "running":
+                set_phase(run, key, "stopped", f"stopped by {run.get('stop_requested_by') or 'admin'}")
+        run["status"], run["error"] = "stopped", None
+        event(run, "run stopped from the dashboard: nothing deployed, the dataset is not marked as trained", "warning")
+        self.notify(run, "stopped", "Retraining run stopped", f"Run {run['id']} ({run['dataset']['zip']}) was stopped "
+                                                            f"by {run.get('stop_requested_by')}. The served model is unchanged.")
+        self._close(run)
 
     def _merge_live(self, run: dict, live: dict) -> None:
         if run["phases"]["kaggle_start"]["status"] != "done":
@@ -532,7 +675,7 @@ class Orchestrator:
             event(run, e.get("message", ""), e.get("level", "info"), source="kaggle", ts=e.get("ts"))
         run["live_events_seen"] = len(notebook_events)
         run["live"] = {k: live.get(k) for k in ("current", "progress", "epochs", "max_epochs", "gpu", "data",
-                                                  "updated_at", "status")}
+                                                  "updated_at", "status", "console")}
 
     def _finish(self, run: dict, live: dict | None) -> None:
         set_phase(run, "collect", "running")
@@ -571,6 +714,8 @@ class Orchestrator:
             set_phase(run, "hot_reload", "skipped", "gate did not deploy the model: the served model stays")
             run["status"] = "rejected" if result.get("status") == "rejected" else "approved"
             event(run, f"gate {result.get('status')} ({summary}): {reasons}. Served model unchanged.", "warning")
+            self.notify(run, run["status"], "Retrained model was not deployed",
+                        f"Run {run['id']} on {run['dataset']['zip']}: {reasons}. The current model keeps serving.")
             self._close(run)
 
     def check_reload(self, run: dict) -> None:
@@ -587,6 +732,9 @@ class Orchestrator:
             run["status"] = "succeeded"
             event(run, f"EC2 workers hot-reloaded: now serving {served}")
             self.refresh_serving(force=True)
+            r = run.get("result") or {}
+            self.notify(run, "deployed", "New signature model is live",
+                        f"{served} is now serving (test mAP@50 {_fmt(r.get('test_map50'))}, dataset {run['dataset']['zip']}).")
             self._close(run)
             return
         started = _parse_ts(run["phases"]["hot_reload"].get("started_at")) or self.clock()
@@ -609,6 +757,7 @@ class Orchestrator:
         run["status"], run["error"] = "failed", reason
         event(run, reason, "error")
         self.store.add_failure(run["dataset"]["fingerprint"])
+        self.notify(run, "failed", "Retraining run failed", f"Run {run['id']} ({run['dataset']['zip']}): {reason}")
         self._close(run)
 
     def _close(self, run: dict) -> None:
@@ -637,18 +786,162 @@ def build_orchestrator(settings=None) -> Orchestrator:
         finally:
             result.forget()
 
+    from .alerts import Notifier
+    from .comet_client import CometClient
+
+    store = PipelineStore(redis.Redis.from_url(cfg.broker_url))
     return Orchestrator(
-        cfg, PipelineStore(redis.Redis.from_url(cfg.broker_url)), boto3.client("s3"),
+        cfg, store, boto3.client("s3"),
         HfInspector(cfg.hf_token), KaggleCLI(cfg.kaggle_username, cfg.kaggle_kernel_slug, cfg.kaggle_secrets_slug,
-                                             cfg.kaggle_accelerator), probe)
+                                             cfg.kaggle_accelerator), probe,
+        comet=CometClient(cfg.comet_api_key, cfg.comet_base_url) if cfg.comet_api_key else None,
+        notifier=Notifier(cfg, store))
+
+
+# ===================================================================== admin actions (API process, admin token)
+STOPPABLE_UNTIL = PHASE_KEYS.index("gate")  # once the gate runs, the deploy decision is being written
+
+
+class ActionError(ValueError):
+    pass
+
+
+def request_stop(store: PipelineStore, s3, cfg, run_id: str | None, who: str) -> dict:
+    """Ask the Kaggle notebook to stop: a small control file in S3 that it checks every heartbeat (~20 s)."""
+    run_id = run_id or store.active()
+    run = store.get_run(run_id) if run_id else None
+    if not run or run["status"] != "running":
+        raise ActionError("there is no running training run to stop")
+    if run["phases"]["kaggle_submit"]["status"] != "done":
+        raise ActionError("the Kaggle job has not been submitted yet; try again in a few seconds")
+    if any(run["phases"][k]["status"] in {"running", "done"} for k in PHASE_KEYS[STOPPABLE_UNTIL:]):
+        raise ActionError("too late to stop: the validation gate is already deciding about deployment")
+    prefix = cfg.model_s3_prefix.strip("/")
+    s3.put_object(Bucket=cfg.model_s3_bucket, Key=f"{prefix}/pipeline_runs/control/{run['id']}.json",
+                  Body=json.dumps({"stop": True, "by": who, "at": utcnow()}).encode(), ContentType="application/json")
+    store.request_stop(run["id"], who)
+    store.audit("stop", f"stop requested for {run['id']} ({run['dataset']['zip']})", who)
+    return {"stopping": run["id"]}
+
+
+def rollback(store: PipelineStore, s3, cfg, who: str) -> dict:
+    """Point the serving alias back to the version recorded as `previous_version` (workers hot-reload it)."""
+    prefix, alias = cfg.model_s3_prefix.strip("/"), cfg.model_alias or "latest"
+    if store.active() and (store.get_run(store.active()) or {}).get("status") == "deploying":
+        raise ActionError("a deployment is in progress; wait until it finishes")
+
+    def read(key):
+        try:
+            return json.loads(s3.get_object(Bucket=cfg.model_s3_bucket, Key=key)["Body"].read())
+        except Exception:
+            return None
+
+    current = read(f"{prefix}/aliases/{alias}.json")
+    target = (current or {}).get("previous_version")
+    if not target:
+        raise ActionError(f"alias '{alias}' has no previous version to roll back to")
+    manifest = read(f"{prefix}/versions/{target}/manifest.json")
+    if not manifest:
+        raise ActionError(f"version {target} has no manifest in S3; refusing to roll back to it")
+    body = {"version": target, "manifest_key": f"{prefix}/versions/{target}/manifest.json",
+            "artifact_key": f"{prefix}/versions/{target}/artifact.zip", "sha256": manifest.get("artifact_sha256"),
+            "stage": "rollback", "previous_version": current["version"], "rolled_back_at": utcnow(), "rolled_back_by": who}
+    s3.put_object(Bucket=cfg.model_s3_bucket, Key=f"{prefix}/aliases/{alias}.json", Body=json.dumps(body, indent=2).encode(),
+                  ContentType="application/json", ServerSideEncryption="AES256")
+    store.audit("rollback", f"alias '{alias}': {current['version']} -> {target}; workers switch within "
+                            f"{cfg.model_poll_seconds // 60} min", who)
+    store.r.delete("pipeline:serving")  # the next tick re-reads the alias and asks a worker what it serves
+    return {"alias": alias, "from": current["version"], "to": target}
+
+
+def set_alerts(store: PipelineStore, prefs: dict, who: str) -> dict:
+    current = store.get_json("alerts") or {}
+    changed = {k: bool(v) for k, v in prefs.items() if k in {"email", "slack", "stuck"}}
+    current.update(changed)
+    store.set_json("alerts", current)
+    store.audit("alerts", ", ".join(f"{k} {'on' if v else 'off'}" for k, v in changed.items()) or "no change", who)
+    return current
+
+
+# ===================================================================== dashboard read model
+DEFAULT_PHASE_SECONDS = {"kaggle_submit": 15, "kaggle_start": 120, "download": 150, "parse": 30, "clean": 420,
+                         "near_dup": 600, "split": 60, "warm_start": 40, "evaluation": 300, "calibration": 180,
+                         "package": 45, "publish": 45, "gate": 300, "collect": 10, "hot_reload": 300}
+TRAINING_DEFAULT_SECONDS = {"full": 1650 * 8, "smoke": 360}
+
+
+def _phase_seconds(run: dict, key: str) -> float | None:
+    p = run["phases"].get(key) or {}
+    a, b = _parse_ts(p.get("started_at")), _parse_ts(p.get("ended_at"))
+    return (b - a) if (a and b and b >= a) else None
+
+
+def estimate_finish(run: dict, history: list[dict], now: float) -> dict | None:
+    """Time left for a live run: median step durations of earlier runs in the same mode (defaults until there are any)."""
+    if run["status"] not in {"running", "deploying"}:
+        return None
+    done = [r for r in history if r["id"] != run["id"] and r.get("status") in {"succeeded", "rejected", "approved"}
+            and r.get("mode") == run.get("mode")]
+    remaining, basis = 0.0, "history" if done else "defaults"
+    for key in PHASE_KEYS:
+        st = run["phases"][key]
+        if st["status"] in {"done", "skipped", "failed", "stopped"}:
+            continue
+        samples = sorted(x for x in (_phase_seconds(r, key) for r in done) if x is not None)
+        typical = samples[len(samples) // 2] if samples else (
+            TRAINING_DEFAULT_SECONDS.get(run.get("mode"), 3600) if key == "training" else DEFAULT_PHASE_SECONDS.get(key, 30))
+        if key == "training":
+            eps = ((run.get("live") or {}).get("epochs") or [])
+            max_ep = (run.get("live") or {}).get("max_epochs")
+            secs = [e.get("epoch_seconds") for e in eps if isinstance(e.get("epoch_seconds"), (int, float))]
+            if secs and max_ep:
+                typical = sum(secs) / len(secs) * max_ep  # upper bound: early stopping may end sooner
+        started = _parse_ts(st.get("started_at"))
+        elapsed = (now - started) if (st["status"] == "running" and started) else 0
+        remaining += max(typical - elapsed, 0 if st["status"] != "running" else typical * 0.05)
+    return {"remaining_seconds": round(remaining), "finish_at": dt.datetime.fromtimestamp(now + remaining, dt.timezone.utc).isoformat(timespec="seconds"),
+            "basis": basis, "runs_used": len(done)}
+
+
+def build_lineage(runs: list[dict], serving_version: str | None, selected: dict | None) -> dict:
+    """Base checkpoint -> first model -> every deployed retrain, plus the selected run if it was not deployed."""
+    deployed = sorted((r for r in runs if (r.get("result") or {}).get("status") == "deployed"), key=lambda r: r["created_at"])
+    models = []
+    first_parent = (deployed[0]["result"].get("init_version") if deployed else None) or (None if deployed else serving_version)
+    if first_parent:
+        models.append({"version": first_parent, "source": "first model (Colab fine-tune)"})
+    for r in deployed:
+        res = r["result"]
+        models.append({"version": res.get("version"), "source": "retrain on Kaggle", "run_id": r["id"],
+                       "dataset": r["dataset"].get("zip"), "dataset_sha256": r["dataset"].get("fingerprint"),
+                       "test_map50": res.get("test_map50"), "created_at": r["created_at"]})
+    if serving_version and serving_version not in [m["version"] for m in models]:
+        models.append({"version": serving_version, "source": "served (rolled back or set by hand)"})
+    current = None
+    if selected and (selected.get("result") or {}).get("status") != "deployed":
+        current = {"run_id": selected["id"], "status": selected["status"],
+                   "version": (selected.get("result") or {}).get("version"), "dataset": selected["dataset"].get("zip"),
+                   "dataset_sha256": selected["dataset"].get("fingerprint")}
+    return {"base": "PekingU/rtdetr_v2_r18vd", "models": models, "serving": serving_version, "current": current}
 
 
 def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dict[str, Any]:
     active = store.active()
     ids = store.run_ids(20)
+    runs = [r for r in (store.get_run(i) for i in ids) if r]
     run = store.get_run(run_id or active or (ids[0] if ids else "")) if (run_id or active or ids) else None
+    if run and (stop := store.stop_request(run["id"])) and not run.get("stop_requested_at"):
+        run["stop_requested_at"], run["stop_requested_by"] = stop["at"], stop["by"]
     hb = store.last_heartbeat()
     user = cfg.kaggle_username
+    serving = store.get_json("serving") or {}
+    serving_version = (serving.get("worker") or {}).get("detector_version") or (serving.get("alias") or {}).get("version")
+    prev_ds = next(({"run_id": r["id"], "zip": r["dataset"].get("zip"), "summary": r["live"]["data"]["dataset_summary"]}
+                    for r in runs if run and r["id"] != run["id"] and r["created_at"] < run["created_at"]
+                    and ((r.get("live") or {}).get("data") or {}).get("dataset_summary")), None)
+    webhooks = [d for d in store.decisions(50) if d.get("decision") == "webhook"]
+    alert_prefs = store.get_json("alerts") or {}
+    channels = {"email": bool(cfg.smtp_host and cfg.alert_email_to), "slack": bool(cfg.alert_webhook_url)}
     return json_safe({
         "server_time": utcnow(),
         "phases": [{"key": k, "label": label, "where": where} for k, label, where in PHASES],
@@ -659,14 +952,28 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
                    "mode": cfg.retrain_mode, "deploy_alias": cfg.model_alias, "poll_minutes": cfg.pipeline_poll_minutes,
                    "gate_floor": cfg.gate_min_test_map50, "gate_max_regression": cfg.gate_max_regression,
                    "gate_max_val_test_gap": cfg.gate_max_val_test_gap, "comet_project": cfg.comet_project,
+                   "comet_workspace": cfg.comet_workspace, "comet_enabled": bool(cfg.comet_api_key),
+                   "comet_project_url": (f"{cfg.comet_base_url.rstrip('/')}/{cfg.comet_workspace}/{cfg.comet_project}"
+                                         if cfg.comet_workspace else None),
                    "kaggle_url": f"https://www.kaggle.com/code/{user}/{cfg.kaggle_kernel_slug}" if user else None,
                    "accelerator": cfg.kaggle_accelerator, "admin_enabled": bool(cfg.pipeline_admin_token),
+                   "model_poll_seconds": cfg.model_poll_seconds,
                    "s3_prefix": f"s3://{cfg.model_s3_bucket}/{cfg.model_s3_prefix.strip('/')}"},
         "active_run_id": active,
         "run": run,
-        "runs": [run_summary(r) for r in (store.get_run(i) for i in ids) if r],
+        "eta": estimate_finish(run, runs, time.time()) if run else None,
+        "previous_dataset": prev_ds,
+        "lineage": build_lineage(runs, serving_version, run),
+        "runs": [run_summary(r) for r in runs],
         "decisions": store.decisions(30),
-        "serving": store.get_json("serving"),
+        "audit": store.audit_log(30),
+        "serving": serving,
+        "rollback_to": (serving.get("alias") or {}).get("previous_version"),
+        "kaggle_quota": store.get_json("kaggle_quota"),
+        "alerts": {"channels": channels, "prefs": {"email": alert_prefs.get("email", channels["email"]),
+                                                   "slack": alert_prefs.get("slack", channels["slack"]),
+                                                   "stuck": alert_prefs.get("stuck", True)}},
+        "last_webhook_at": webhooks[0]["ts"] if webhooks else None,
         "last_check": store.get_json("last_check"),
         "pending_recheck": bool(store.r.exists("pipeline:pending")),
     })

@@ -49,12 +49,21 @@ def cmd_secrets(a) -> None:
     missing = [k for k in REQUIRED_SECRETS if k not in values]
     if missing:
         sys.exit(f"missing required secrets: {', '.join(missing)}")
-    owner, slug = a.dataset.split("/", 1)
+    try:
+        push_secrets(a.dataset, values)
+    except RuntimeError as exc:
+        sys.exit(str(exc))
+
+
+def push_secrets(dataset: str, values: dict, wait_seconds: int = 600) -> None:
+    """Create or update the private secrets dataset and wait until Kaggle has processed it (raises on failure).
+    Also used by the EC2 orchestrator to sync the secrets from its .env before every run."""
+    owner, slug = dataset.split("/", 1)
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         (d / "pipeline_secrets.json").write_text(json.dumps(values))
         (d / "dataset-metadata.json").write_text(json.dumps(
-            {"title": slug, "id": a.dataset, "licenses": [{"name": "CC0-1.0"}]}))
+            {"title": slug, "id": dataset, "licenses": [{"name": "CC0-1.0"}]}))
         r = run("kaggle", "datasets", "version", "-p", str(d), "-m", "pipeline run", check=False)
         text = (r.stdout + r.stderr).lower()
         if r.returncode != 0 or "error" in text or "not found" in text or "404" in text:
@@ -63,14 +72,14 @@ def cmd_secrets(a) -> None:
             text = (r.stdout + r.stderr).lower()
         print(r.stdout[-1500:], r.stderr[-1500:])  # the CLI never echoes file contents
         if r.returncode != 0 or ("error" in text and "already" not in text):
-            sys.exit("could not upload the secrets dataset")
-    for _ in range(60):  # wait until Kaggle has processed the new version
-        status = run("kaggle", "datasets", "status", a.dataset, check=False).stdout.strip().lower()
+            raise RuntimeError("could not upload the secrets dataset: " + (r.stdout + r.stderr)[-300:])
+    for _ in range(max(1, wait_seconds // 10)):  # wait until Kaggle has processed the new version
+        status = run("kaggle", "datasets", "status", dataset, check=False).stdout.strip().lower()
         print("dataset status:", status)
         if "ready" in status:
             return
         time.sleep(10)
-    sys.exit("secrets dataset did not become ready")
+    raise RuntimeError("secrets dataset did not become ready")
 
 
 # ---------------------------------------------------------------- notebook + metadata
@@ -88,6 +97,7 @@ def overrides_cell(a) -> str:
         PIPELINE_RUN_ID=getattr(a, "run_id", None), LIVE_PROGRESS=bool(getattr(a, "run_id", None)),
         DATASET_FINGERPRINT=getattr(a, "dataset_fingerprint", None) or None,
         EXPECTED_ZIP_SHA256=getattr(a, "expected_sha256", None) or None,
+        COMET_WORKSPACE_NAME=getattr(a, "comet_workspace", None) or None,
     )
     if getattr(a, "comet_project", None):
         cfg["COMET_PROJECT"] = a.comet_project
@@ -242,6 +252,7 @@ def main() -> None:
     b.add_argument("--gate-max-val-test-gap", type=float, default=0.05,
                    help="overfitting check: reject if validation mAP@50 - test mAP@50 is larger")
     b.add_argument("--comet-project", default=None, help="Comet project for this run (default: notebook CONFIG)")
+    b.add_argument("--comet-workspace", default=None, help="Comet workspace (default: COMET_WORKSPACE secret)")
     b.add_argument("--github-run-url", default=None)
     b.add_argument("--run-id", default=None, help="pipeline run id: enables live progress to S3")
     b.add_argument("--dataset-fingerprint", default=None, help="dataset ZIP fingerprint (HF LFS sha256)")

@@ -27,6 +27,17 @@
                 "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/*",
                 "arn:aws:s3:::signatureai-df-detr-models/signatureai/similarity/*"
             ]
+        },
+        {
+            "Sid": "PipelineDashboardActions",
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/aliases/*",
+                "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/pipeline_runs/control/*"
+            ]
         }
     ]
 }

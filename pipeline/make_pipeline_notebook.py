@@ -67,6 +67,7 @@ PIPELINE_RUN_ID = None        # set by the EC2 orchestrator; names the live-prog
 LIVE_PROGRESS = False         # write pipeline_runs/live/<PIPELINE_RUN_ID>.json to S3 for the dashboard
 DATASET_FINGERPRINT = None    # SHA-256 of the dataset ZIP as reported by Hugging Face (LFS oid)
 EXPECTED_ZIP_SHA256 = None    # downloaded ZIP must match this, so we train exactly what was checked
+COMET_WORKSPACE_NAME = None   # Comet workspace (else the COMET_WORKSPACE secret, else the key's first workspace)
 print('Runtime:', RUNTIME_NAME)
 try:  # fail in seconds (not after 20 min of data prep) on GPUs the installed PyTorch cannot run, e.g. Kaggle P100 (sm_60)
     import torch
@@ -173,7 +174,7 @@ LIVE = """
 # current phase, phase timings, tqdm progress bars, per-epoch metrics, GPU memory and short summaries.
 import threading, math as _math, time as _time, datetime as _dt
 _LIVE = {'run_id': PIPELINE_RUN_ID, 'runtime': RUNTIME_NAME, 'status': 'running', 'current': None,
-         'phases': {}, 'events': [], 'data': {}, 'progress': [], 'epochs': [], 'gpu': None,
+         'phases': {}, 'events': [], 'data': {}, 'progress': [], 'epochs': [], 'gpu': None, 'console': [],
          'started_at': _dt.datetime.now(_dt.timezone.utc).isoformat()}
 _live_lock = threading.Lock()
 _live_s3 = [None]
@@ -224,6 +225,17 @@ def _live_snapshot():
         pass
     _LIVE['max_epochs'] = globals().get('EPOCHS')
 
+def _live_client():
+    if _live_s3[0] is None:
+        import boto3
+        kw = {'aws_access_key_id': secret_or_none('AWS_ACCESS_KEY_ID'),
+              'aws_secret_access_key': secret_or_none('AWS_SECRET_ACCESS_KEY'),
+              'region_name': secret_or_none('AWS_REGION')}
+        if secret_or_none('AWS_SESSION_TOKEN'):
+            kw['aws_session_token'] = secret_or_none('AWS_SESSION_TOKEN')
+        _live_s3[0] = boto3.Session(**kw).client('s3')
+    return _live_s3[0]
+
 def live_flush():
     if not (LIVE_PROGRESS and PIPELINE_RUN_ID):
         return
@@ -231,15 +243,7 @@ def live_flush():
         try:
             _live_snapshot()
             _LIVE['updated_at'] = _now_iso()
-            if _live_s3[0] is None:
-                import boto3
-                kw = {'aws_access_key_id': secret_or_none('AWS_ACCESS_KEY_ID'),
-                      'aws_secret_access_key': secret_or_none('AWS_SECRET_ACCESS_KEY'),
-                      'region_name': secret_or_none('AWS_REGION')}
-                if secret_or_none('AWS_SESSION_TOKEN'):
-                    kw['aws_session_token'] = secret_or_none('AWS_SESSION_TOKEN')
-                _live_s3[0] = boto3.Session(**kw).client('s3')
-            _live_s3[0].put_object(
+            _live_client().put_object(
                 Bucket=secret_or_none('AWS_S3_BUCKET'),
                 Key=f"{S3_PREFIX.strip('/')}/pipeline_runs/live/{PIPELINE_RUN_ID}.json",
                 Body=json.dumps(_jsonable(_LIVE)).encode(), ContentType='application/json',
@@ -252,8 +256,37 @@ def live_event(message, level='info'):
     _LIVE['events'] = _LIVE['events'][-200:]
     print(f'[pipeline] {message}')
 
+class PipelineStopped(KeyboardInterrupt):
+    \"\"\"Raised when the dashboard's Stop button asked this run to stop.\"\"\"
+
+_STOP = {'requested': False, 'by': None}
+
+def _check_stop():
+    \"\"\"Stop button: EC2 writes pipeline_runs/control/<run>.json = {"stop": true}. Checked every heartbeat.\"\"\"
+    if not (LIVE_PROGRESS and PIPELINE_RUN_ID) or _STOP['requested']:
+        return
+    try:
+        obj = _live_client().get_object(Bucket=secret_or_none('AWS_S3_BUCKET'),
+                                        Key=f"{S3_PREFIX.strip('/')}/pipeline_runs/control/{PIPELINE_RUN_ID}.json")
+        ctl = json.loads(obj['Body'].read())
+    except Exception:
+        return
+    if not ctl.get('stop'):
+        return
+    if _LIVE.get('current') == 'gate':  # the deploy decision is being written: let it finish cleanly
+        live_event('stop requested during the gate step: finishing this step first', 'warning')
+        return
+    _STOP.update(requested=True, by=ctl.get('by'))
+    _LIVE['status'] = 'stopped'
+    live_event(f"STOP requested from the dashboard: stopping now, nothing will be deployed", 'warning')
+    live_flush()
+    import _thread
+    _thread.interrupt_main()  # raises KeyboardInterrupt in the running cell -> the Kaggle run ends
+
 def live_phase(name, detail=None):
     \"\"\"Close the running phase and start `name` (None = finished).\"\"\"
+    if _STOP['requested']:
+        raise PipelineStopped('stopped from the dashboard')
     now = _now_iso()
     cur = _LIVE.get('current')
     if cur and _LIVE['phases'].get(cur, {}).get('status') == 'running':
@@ -274,12 +307,59 @@ def live_data(**kw):
 def _live_heartbeat():
     while _LIVE.get('status') == 'running':
         _time.sleep(20)
+        _check_stop()
         live_flush()
 
+class _ConsoleTee:
+    \"\"\"Keeps the last notebook output lines for the dashboard's 'Notebook output' panel (stdout only).\"\"\"
+    def __init__(self, stream):
+        self._stream, self._buf = stream, ''
+    def write(self, text):
+        try:
+            self._buf += text
+            *lines, self._buf = self._buf.split('\\n')
+            for line in lines:
+                line = line.split('\\r')[-1].rstrip()
+                if line:
+                    _LIVE['console'].append({'ts': _now_iso(), 'line': line[:400]})
+            if len(_LIVE['console']) > 150:
+                del _LIVE['console'][:-150]
+        except Exception:
+            pass
+        return self._stream.write(text)
+    def flush(self):
+        return self._stream.flush()
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
 if LIVE_PROGRESS and PIPELINE_RUN_ID:
+    if not isinstance(sys.stdout, _ConsoleTee):
+        sys.stdout = _ConsoleTee(sys.stdout)
     threading.Thread(target=_live_heartbeat, name='live-progress', daemon=True).start()
     live_event(f'Kaggle notebook started for pipeline run {PIPELINE_RUN_ID}')
     live_flush()
+"""
+
+COMET_PREFLIGHT = """
+# COMET PREFLIGHT: check the API key, workspace and project in seconds, before 20+ minutes of data work.
+# Before this check a wrong key/workspace failed SILENTLY: training ran, but nothing reached Comet.
+COMET_WORKSPACE_RESOLVED, COMET_URL = None, None
+if USE_COMET:
+    import comet_ml
+    _comet_key = secret_or_none('COMET_API_KEY')
+    if not _comet_key:
+        raise RuntimeError('COMET_API_KEY is missing (Kaggle secrets dataset / env). Set it or USE_COMET = False.')
+    try:
+        _comet_workspaces = list(comet_ml.API(api_key=_comet_key).get_workspaces())
+    except Exception as e:
+        raise RuntimeError(f'Comet rejected COMET_API_KEY ({type(e).__name__}: {e}). Put a valid key in the secrets.') from e
+    COMET_WORKSPACE_RESOLVED = COMET_WORKSPACE_NAME or secret_or_none('COMET_WORKSPACE') or (_comet_workspaces[0] if _comet_workspaces else None)
+    if COMET_WORKSPACE_RESOLVED not in _comet_workspaces:
+        raise RuntimeError(f'Comet workspace {COMET_WORKSPACE_RESOLVED!r} does not belong to this API key. '
+                           f'Workspaces of this key: {_comet_workspaces}')
+    live_event(f'Comet OK: workspace {COMET_WORKSPACE_RESOLVED}, project {COMET_PROJECT}')
+    live_data(comet_workspace=COMET_WORKSPACE_RESOLVED, comet_project=COMET_PROJECT)
+    print('Comet preflight OK | workspace:', COMET_WORKSPACE_RESOLVED, '| project:', COMET_PROJECT)
 """
 
 DATASET_CHECK = """
@@ -460,7 +540,7 @@ PIPELINE_RESULT = {
     'deploy_alias': DEPLOY_ALIAS if GATE_DEPLOYED else None,
     's3_model_uri': S3_MODEL_URI,
     'comet_experiment_key': comet_experiment.get_key() if comet_experiment else None,
-    'comet_url': getattr(comet_experiment, 'url', None) if comet_experiment else None,
+    'comet_url': COMET_URL,
     'github_run': GITHUB_RUN_URL,
     'pipeline_run_id': PIPELINE_RUN_ID,
     'dataset_sha256': DATASET_SHA256,
@@ -519,7 +599,7 @@ PHASE_MARKERS = [
     ("# Initial weights: base checkpoint", "_ds = REPORTS_DIR / 'dataset_summary.json'\n"
                                          "live_data(dataset_summary=json.loads(_ds.read_text()) if _ds.exists() else None)\n"
                                          "live_phase('warm_start', INIT_FROM)"),
-    ("from tqdm.auto import tqdm", "live_data(comet_url=getattr(comet_experiment, 'url', None) if comet_experiment else None, "
+    ("from tqdm.auto import tqdm", "live_data(comet_url=COMET_URL, comet_key=comet_experiment.get_key() if comet_experiment else None, "
                                    "run_version=RUN_VERSION, init_version=INIT_VERSION, train_images=len(train_ds), "
                                    "val_images=len(val_ds), test_images=len(test_ds))\n"
                                    "live_phase('training', f'{EPOCHS} epochs max')"),
@@ -576,6 +656,13 @@ def build(source: Path, target: Path) -> None:
 
     c16 = patch(src(16), "DATASET_SHA256 = sha256_file(zip_path)",
                 "DATASET_SHA256 = globals().get('DATASET_SHA256') or sha256_file(zip_path)", 16)
+    c16 = patch(c16, "workspace=secret_or_none('COMET_WORKSPACE') or None,", "workspace=COMET_WORKSPACE_RESOLVED,", 16)
+    c16 = patch(c16, "    print('Comet ONLINE tracking enabled | project:', COMET_PROJECT, '| run:', RUN_VERSION)",
+                "    if not getattr(comet_experiment, 'alive', True):\n"
+                "        raise RuntimeError('Comet experiment is not recording (alive=False): check COMET_API_KEY / workspace')\n"
+                "    COMET_URL = getattr(comet_experiment, 'url', None) or "
+                "f'https://www.comet.com/{COMET_WORKSPACE_RESOLVED}/{COMET_PROJECT}/{comet_experiment.get_key()}'\n"
+                "    print('Comet ONLINE tracking enabled | project:', COMET_PROJECT, '| run:', RUN_VERSION, '|', COMET_URL)", 16)
     c16 = patch(c16, "tags=['signature-detection', 'rtdetrv2', 'colab']",
                 "tags=['signature-detection', 'rtdetrv2', RUNTIME_NAME] + (['pipeline', PIPELINE_MODE] if PIPELINE_MODE else [])", 16)
     c16 = patch(c16, "'phash_threshold': PHASH_THRESHOLD, 'ssim_threshold': SSIM_THRESHOLD\n    })",
@@ -597,7 +684,7 @@ def build(source: Path, target: Path) -> None:
                 "    'comet_experiment_key'", 22)
 
     out = [markdown(INTRO), copy.deepcopy(cells[1]), code(c2), code(DEFAULTS), code(OVERRIDE_PLACEHOLDER),
-           code(c3), code(LIVE), code(c4)]
+           code(c3), code(LIVE), code(COMET_PREFLIGHT), code(c4)]
     c12 = patch(src(12), "sample(unique_records, min(len(unique_records),6))",
                 "sample(clean_records, min(len(clean_records),6))", 12)  # quarantined records have no final_split
     out += [copy.deepcopy(cells[i]) for i in range(5, 12)]          # parsing, cleaning, leakage gate

@@ -1,7 +1,7 @@
 // Shape of GET /v1/pipeline/state (signature_service/app/retrain.py: dashboard_state)
 
-export type PhaseStatus = "pending" | "running" | "done" | "failed" | "skipped";
-export type RunStatus = "running" | "deploying" | "succeeded" | "approved" | "rejected" | "failed" | "succeeded_reload_pending";
+export type PhaseStatus = "pending" | "running" | "done" | "failed" | "skipped" | "stopped";
+export type RunStatus = "running" | "deploying" | "succeeded" | "approved" | "rejected" | "failed" | "stopped" | "succeeded_reload_pending";
 
 export interface PhaseDef { key: string; label: string; where: string }
 export interface PhaseState { status: PhaseStatus; started_at?: string; ended_at?: string; detail?: string }
@@ -14,6 +14,7 @@ export interface Epoch {
   val_map50?: number;
   val_map?: number;
   epoch_seconds?: number;
+  learning_rate?: number;
 }
 
 export interface Gate {
@@ -22,6 +23,7 @@ export interface Gate {
   max_regression?: number;
   max_val_test_gap?: number;
   baseline_test_map50?: number | null;
+  baseline_test_metrics?: Record<string, number> | null;
   reasons?: string[];
 }
 
@@ -49,6 +51,9 @@ export interface RunResult {
   deploy_alias?: string;
   s3_model_uri?: string;
   comet_url?: string;
+  best_val_map50?: number;
+  epochs_completed?: number;
+  init_version?: string;
 }
 
 export interface DatasetSummary {
@@ -65,14 +70,31 @@ export interface DatasetSummary {
 
 export interface LiveData {
   dataset?: { sha256?: string; sha256_verified?: boolean };
+  comet_url?: string | null;
+  comet_key?: string | null;
   dataset_summary?: DatasetSummary;
   test_metrics?: { map_50?: number; map?: number; mar_100?: number };
   calibration?: { threshold?: number; precision?: number; recall?: number };
   result?: RunResult;
-  comet_url?: string;
 }
 
 export interface Progress { desc: string; n: number; total: number; rate?: number; postfix?: string }
+
+export interface CometMetric { name: string; latest?: number | null; max?: number | null; min?: number | null; step?: number | null; history?: (number | null)[] }
+
+export interface CometInfo {
+  enabled?: boolean;
+  key?: string | null;
+  url?: string | null;
+  workspace?: string | null;
+  project?: string | null;
+  metrics?: CometMetric[];
+  params?: Record<string, string>;
+  console?: string[];
+  assets?: { name?: string; type?: string; size?: number }[];
+  error?: string | null;
+  fetched_at?: string;
+}
 
 export interface Run {
   id: string;
@@ -88,7 +110,14 @@ export interface Run {
   kaggle: { kernel?: string; url?: string; version?: number; status?: string; message?: string };
   phases: Record<string, PhaseState>;
   events: RunEvent[];
-  live?: { current?: { label?: string }; progress?: Progress[]; epochs?: Epoch[]; max_epochs?: number; gpu?: { name?: string; allocated_gb?: number }; data?: LiveData; updated_at?: string } | null;
+  live?: {
+    current?: string | null; progress?: Progress[]; epochs?: Epoch[]; max_epochs?: number; status?: string;
+    gpu?: { name?: string; allocated_gb?: number; reserved_gb?: number }; data?: LiveData; updated_at?: string;
+    console?: { ts: string; line: string }[];
+  } | null;
+  comet?: CometInfo;
+  stop_requested_at?: string | null;
+  stop_requested_by?: string | null;
   result?: RunResult | null;
   error?: string | null;
   log_tail?: string | null;
@@ -99,7 +128,14 @@ export interface Run {
 export interface RunSummary {
   id: string; status: RunStatus; created_at: string; finished_at?: string | null; trigger?: string; zip?: string;
   fingerprint?: string; version?: string; gate_status?: string; test_map50?: number; champion_map50?: number; error?: string;
+  mode?: string; best_val_map50?: number | null; val_test_gap?: number | null; epochs?: number | null;
+  duration_seconds?: number | null; kaggle_version?: number | null; comet_url?: string | null; test_map?: number | null;
+  threshold?: number | null;
 }
+
+export interface LineageModel { version: string; source: string; run_id?: string; dataset?: string; dataset_sha256?: string; test_map50?: number; created_at?: string }
+
+export interface AuditEntry { ts: string; action: string; detail: string; who: string }
 
 export interface Decision { ts: string; decision: string; message: string; source?: string; run_id?: string }
 
@@ -110,12 +146,21 @@ export interface PipelineState {
   config: {
     hf_repo?: string; hf_url?: string; mode: string; deploy_alias: string; poll_minutes: number; gate_floor: number;
     gate_max_regression: number; gate_max_val_test_gap?: number; comet_project?: string; kaggle_url?: string; accelerator: string; admin_enabled: boolean; s3_prefix: string;
+    comet_workspace?: string | null; comet_enabled?: boolean; comet_project_url?: string | null; model_poll_seconds?: number;
   };
+  eta?: { remaining_seconds: number; finish_at: string; basis: "history" | "defaults"; runs_used: number } | null;
+  previous_dataset?: { run_id: string; zip?: string; summary: DatasetSummary } | null;
+  lineage?: { base: string; models: LineageModel[]; serving?: string | null; current?: { run_id: string; status: RunStatus; version?: string | null; dataset?: string; dataset_sha256?: string } | null };
+  audit?: AuditEntry[];
+  rollback_to?: string | null;
+  kaggle_quota?: { used_hours?: number; total_hours?: number; remaining_hours?: number; refresh_at?: string | null; error?: string } | null;
+  alerts?: { channels: { email: boolean; slack: boolean }; prefs: { email: boolean; slack: boolean; stuck: boolean } };
+  last_webhook_at?: string | null;
   active_run_id: string | null;
   run: Run | null;
   runs: RunSummary[];
   decisions: Decision[];
-  serving: { worker?: { detector_version?: string }; worker_error?: string; alias?: { version?: string }; alias_name?: string; checked_at?: string } | null;
+  serving: { worker?: { detector_version?: string }; worker_error?: string; alias?: { version?: string; previous_version?: string; stage?: string }; alias_name?: string; checked_at?: string } | null;
   last_check: { ts: string; source: string; commit: string; zips: { path: string }[]; url: string } | null;
   pending_recheck: boolean;
 }
@@ -127,6 +172,7 @@ export const RUN_STATUS: Record<string, { label: string; tone: "live" | "good" |
   approved: { label: "Approved, not deployed", tone: "warn" },
   rejected: { label: "Rejected, current model kept", tone: "warn" },
   failed: { label: "Failed", tone: "bad" },
+  stopped: { label: "Stopped by you", tone: "bad" },
   succeeded_reload_pending: { label: "Deployed, reload pending", tone: "warn" },
 };
 

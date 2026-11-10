@@ -260,3 +260,151 @@ def test_nan_in_a_result_never_breaks_the_dashboard_api(env):
     state = dashboard_state(env.store, env.cfg, run_id)
     json.dumps(state, allow_nan=False)  # raises if any NaN/inf is left
     assert state["run"]["result"]["test_map50"] is None
+
+
+# ---------------------------------------------------------------------------------------------- v2 dashboard actions
+from app import retrain as R  # noqa: E402
+from app.alerts import Notifier  # noqa: E402
+
+
+def _running_in_training(env):
+    env.hf.upload("a.zip", SHA_A, "commit-1")
+    run_id = env.orch.request_check("webhook")["run_id"]
+    env.kaggle.state = "running"
+    put_live(env, run_id, status="running", current="training", phases={"training": {"status": "running"}},
+             updated_at=R.utcnow(), data={"comet_key": "abc123", "comet_url": "https://www.comet.com/ws/p/abc123"})
+    env.orch.tick()
+    return run_id
+
+
+def test_stop_button_stops_the_run_without_marking_failure(env):
+    run_id = _running_in_training(env)
+    out = R.request_stop(env.store, env.s3, env.cfg, None, "dashboard (1.2.3.4)")
+    assert out == {"stopping": run_id}
+    ctl = json.loads(env.s3.get_object(Bucket=BUCKET, Key=f"{PREFIX}/pipeline_runs/control/{run_id}.json")["Body"].read())
+    assert ctl["stop"] is True
+    env.orch.tick()                                   # worker picks the request up
+    run = env.store.get_run(run_id)
+    assert run["stop_requested_by"] == "dashboard (1.2.3.4)"
+    env.kaggle.state = "error"                         # the notebook interrupted itself
+    env.orch.tick()
+    run = env.store.get_run(run_id)
+    assert run["status"] == "stopped" and run["phases"]["training"]["status"] == "stopped"
+    assert run["phases"]["gate"]["status"] == "skipped"
+    assert env.store.failures(SHA_A) == 0 and env.store.active() is None
+    assert env.store.audit_log()[0]["action"] == "stop"
+    with pytest.raises(R.ActionError):
+        R.request_stop(env.store, env.s3, env.cfg, run_id, "x")   # nothing running any more
+
+
+def test_stop_refused_once_the_gate_runs(env):
+    run_id = _running_in_training(env)
+    run = env.store.get_run(run_id)
+    R.set_phase(run, "gate", "running")
+    env.store.save_run(run)
+    with pytest.raises(R.ActionError, match="too late"):
+        R.request_stop(env.store, env.s3, env.cfg, run_id, "x")
+
+
+def test_rollback_moves_alias_to_previous_version(env):
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/versions/v-old/manifest.json", Body=json.dumps({"artifact_sha256": "f" * 64}))
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/aliases/latest.json",
+                      Body=json.dumps({"version": "v-new", "previous_version": "v-old"}))
+    out = R.rollback(env.store, env.s3, env.cfg, "dashboard")
+    assert out == {"alias": "latest", "from": "v-new", "to": "v-old"}
+    alias = json.loads(env.s3.get_object(Bucket=BUCKET, Key=f"{PREFIX}/aliases/latest.json")["Body"].read())
+    assert alias["version"] == "v-old" and alias["previous_version"] == "v-new" and alias["sha256"] == "f" * 64
+    assert env.store.audit_log()[0]["action"] == "rollback"
+    # rolling back again goes forward to v-new only if its manifest exists
+    with pytest.raises(R.ActionError, match="no manifest"):
+        R.rollback(env.store, env.s3, env.cfg, "dashboard")
+
+
+class FakeComet:
+    def __init__(self, workspaces=("abdullah-khalid",)):
+        self.ws, self.calls = list(workspaces), 0
+
+    def workspaces(self):
+        return self.ws
+
+    def experiment(self, key):
+        self.calls += 1
+        return {"metrics": [{"name": "val_map50", "latest": 0.81, "max": 0.81, "min": 0.79, "history": [0.79, 0.81]}],
+                "params": {"lr": "2e-5"}, "console": ["Epoch 1 metrics: ..."], "assets": [{"name": "training_history.csv"}]}
+
+
+def test_comet_preflight_blocks_a_wrong_workspace_before_any_gpu(env):
+    env.orch.comet = FakeComet(workspaces=["someone-else"])
+    env.orch.cfg = dataclasses.replace(env.cfg, comet_workspace="abdullah-khalid")
+    env.hf.upload("a.zip", SHA_A, "commit-1")
+    out = env.orch.request_check("webhook")
+    assert out["decision"] == "blocked" and "abdullah-khalid" in out["message"]
+    assert env.kaggle.pushes == []
+
+
+def test_comet_experiment_is_mirrored_into_the_run(env):
+    env.orch.comet = FakeComet()
+    run_id = _running_in_training(env)
+    run = env.store.get_run(run_id)
+    assert run["comet"]["enabled"] and run["comet"]["key"] == "abc123"
+    assert run["comet"]["metrics"][0]["name"] == "val_map50" and run["comet"]["params"] == {"lr": "2e-5"}
+    assert run["comet"]["url"].endswith("/abc123")
+
+
+def test_secrets_are_synced_from_env_when_complete(env, monkeypatch):
+    import sys as _sys
+    _sys.path.insert(0, str(REPO_ROOT / "pipeline"))
+    import kaggle_job
+    pushed = []
+    monkeypatch.setattr(kaggle_job, "push_secrets", lambda ds, values, wait_seconds=0: pushed.append((ds, values)))
+    env.orch.cfg = dataclasses.replace(env.cfg, comet_api_key="ck", comet_workspace="abdullah-khalid", hf_token="ht",
+                                       notebook_aws_access_key_id="AK", notebook_aws_secret_access_key="SK",
+                                       notebook_aws_region="ap-southeast-2")
+    env.hf.upload("a.zip", SHA_A, "commit-1")
+    run_id = env.orch.request_check("webhook")["run_id"]
+    assert pushed and pushed[0][0] == env.kaggle.secrets_dataset
+    assert pushed[0][1]["COMET_WORKSPACE"] == "abdullah-khalid" and pushed[0][1]["AWS_S3_BUCKET"] == BUCKET
+    assert any("secrets synced" in e["message"] for e in env.store.get_run(run_id)["events"])
+    assert "COMET_WORKSPACE_NAME = 'abdullah-khalid'" in env.kaggle.pushes[0]
+
+
+def test_kaggle_quota_is_parsed(monkeypatch):
+    k = R.KaggleCLI("me", "k", "s", "T4")
+    monkeypatch.setattr(k, "_run", lambda *a, **kw: types.SimpleNamespace(
+        stdout="resource,used,remaining,total,refreshAt\nGPU,7.40h,22.60h,30.00h,2026-11-15T00:00:00+00:00\n", stderr=""))
+    assert k.quota() == {"used_hours": 7.4, "remaining_hours": 22.6, "total_hours": 30.0, "refresh_at": "2026-11-15T00:00:00+00:00"}
+
+
+def test_alerts_follow_the_dashboard_toggles(env):
+    sent_mail, posts = [], []
+
+    class SMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def login(self, u, p): pass
+        def send_message(self, m): sent_mail.append(m["Subject"])
+
+    cfg = dataclasses.replace(env.cfg, smtp_host="smtp.example", alert_email_to="me@example.com", alert_webhook_url="https://hooks.example/x")
+    n = Notifier(cfg, env.store, smtp_factory=SMTP, http_post=lambda url, body: posts.append(body["text"]))
+    assert n.send("deployed", "New model", "live") == ["email", "slack"]
+    R.set_alerts(env.store, {"slack": False}, "dashboard")
+    assert n.send("deployed", "New model", "live") == ["email"]
+    R.set_alerts(env.store, {"email": False, "stuck": True}, "dashboard")
+    # a stuck run is urgent: it goes to every configured channel while the "stuck" toggle is on
+    assert n.send("stuck", "Stuck", "no heartbeat") == ["email", "slack"]
+    assert n.send("failed", "Failed", "x") == []          # email and slack toggles are both off now
+    assert len(sent_mail) == 3 and len(posts) == 2
+
+
+def test_dashboard_has_eta_lineage_and_actions(env):
+    run_id = _running_in_training(env)
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/aliases/latest.json", Body=json.dumps({"version": "v-old", "previous_version": "v-older"}))
+    env.orch.refresh_serving(force=True)
+    state = dashboard_state(env.store, env.cfg)
+    assert state["eta"]["remaining_seconds"] > 0 and state["eta"]["basis"] == "defaults"
+    assert state["lineage"]["current"]["run_id"] == run_id and state["lineage"]["serving"] == "v-old"
+    assert state["rollback_to"] == "v-older"
+    assert set(state["alerts"]["prefs"]) == {"email", "slack", "stuck"}
+    json.dumps(state, allow_nan=False)

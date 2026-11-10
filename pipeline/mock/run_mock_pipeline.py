@@ -153,25 +153,45 @@ def main() -> None:
     comet_log = {"parameters": {}, "metrics": [], "assets": [], "images": [], "other": {}, "tags": [],
                  "remote_models": [], "ended": False}
 
-    class FakeExperiment:
-        url = "https://www.comet.com/mock-ws/signature-ai-detection/mock-experiment"
+    import uuid
 
-        def log_parameters(self, d): comet_log["parameters"].update(d)
-        def log_metrics(self, d, step=None, epoch=None, **_): comet_log["metrics"].append((step, dict(d)))
-        def log_asset(self, p, file_name=None, **_): comet_log["assets"].append(file_name or Path(p).name)
+    comet_key = uuid.uuid4().hex[:24]
+    comet_dump = os.environ.get("MOCK_COMET_DUMP")  # the mock orchestrator's fake Comet API reads this file
+
+    def dump():
+        if comet_dump:
+            Path(comet_dump).mkdir(parents=True, exist_ok=True)
+            Path(comet_dump, f"{comet_key}.json").write_text(json.dumps(comet_log, default=str))
+
+    class FakeExperiment:
+        alive = True
+        url = f"https://www.comet.com/{os.environ['COMET_WORKSPACE']}/signature-ai-detection-retrain/{comet_key}"
+
+        def log_parameters(self, d): comet_log["parameters"].update(d); dump()
+        def log_metrics(self, d, step=None, epoch=None, **_): comet_log["metrics"].append((step, dict(d))); dump()
+        def log_asset(self, p, file_name=None, **_): comet_log["assets"].append(file_name or Path(p).name); dump()
         def log_image(self, p, name=None, **_): comet_log["images"].append(name or Path(p).name)
         def log_other(self, k, v): comet_log["other"][k] = v
         def add_tag(self, t): comet_log["tags"].append(t)
         def log_remote_model(self, model_name, uri, **_): comet_log["remote_models"].append((model_name, uri))
-        def get_key(self): return "mock-experiment-key"
-        def end(self): comet_log["ended"] = True
+        def get_key(self): return comet_key
+        def end(self): comet_log["ended"] = True; dump()
 
     def fake_comet_start(**kw):
         comet_log["tags"] += list(kw.get("experiment_config").tags)
         comet_log["project"] = kw.get("project_name")
+        comet_log["workspace"] = kw.get("workspace")
         return FakeExperiment()
 
-    sys.modules["comet_ml"] = types.SimpleNamespace(start=fake_comet_start,
+    class FakeCometAPI:  # used by the notebook's Comet preflight cell
+        def __init__(self, api_key=None, **_):
+            if api_key in (None, "", "bad"):
+                raise ValueError("Invalid COMET_API_KEY")
+
+        def get_workspaces(self):
+            return [os.environ["COMET_WORKSPACE"]]
+
+    sys.modules["comet_ml"] = types.SimpleNamespace(start=fake_comet_start, API=FakeCometAPI,
                                                     ExperimentConfig=lambda **kw: types.SimpleNamespace(**kw))
 
     # ---------------------------------------------------------------- S3 with a served model behind aliases/latest.json
