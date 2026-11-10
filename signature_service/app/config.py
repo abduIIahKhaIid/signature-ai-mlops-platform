@@ -78,6 +78,8 @@ class Settings:
     hf_webhook_secret: str | None = field(default_factory=lambda: os.getenv("HF_WEBHOOK_SECRET") or None)
     hf_dataset_repo: str | None = field(default_factory=lambda: os.getenv("HF_DATASET_REPO") or None)
     retrain_mode: str = field(default_factory=lambda: os.getenv("RETRAIN_MODE", "full"))
+    # max training epochs; empty = the mode's default (smoke 1, full 8). The dashboard setting overrides this.
+    retrain_epochs: int | None = field(default_factory=lambda: int(os.getenv("RETRAIN_EPOCHS")) if os.getenv("RETRAIN_EPOCHS", "").strip() else None)
 
     # EC2 retraining orchestrator (pipeline worker): HF dataset check -> dedup -> Kaggle GPU -> monitor -> hot reload
     pipeline_queue: str = field(default_factory=lambda: os.getenv("PIPELINE_QUEUE", "pipeline"))

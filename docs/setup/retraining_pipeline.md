@@ -118,8 +118,13 @@ Even without any webhook, the fallback poll (`PIPELINE_POLL_MINUTES=30`) finds n
   counted, and the dataset is not marked as trained, so it can run again.
 * **Roll back**: points the alias to `previous_version` from `aliases/latest.json` (after checking that model's
   manifest). Workers switch within `MODEL_POLL_SECONDS`. Nothing is deleted.
-* **Comet panel**: metrics, parameters, console output and files of the run's experiment, read from the Comet API.
-* **Notebook output**: the last 150 lines the Kaggle notebook printed, sent with the heartbeat.
+* **Training epochs**: max epochs for the next runs (1 to 20), saved from the dashboard. Without a dashboard value,
+  `RETRAIN_EPOCHS` in `.env` is used, else the mode default (smoke 1, full 8). A running run keeps its value, and
+  early stopping can still end training sooner. With 3 or more epochs the early-stopping patience is at least 2.
+* **Comet panel**: metrics, parameters, console output and files of the run's experiment, read from the Comet API
+  (the panel scrolls).
+* **Notebook output**: the last 150 lines the Kaggle notebook printed, sent with the heartbeat. It is shown next to
+  the charts while the model trains and moves to the bottom of the page after training.
 * **Alerts**: email on deploy / reject / fail / stop, Slack or Discord on deploy / fail / stop, and a stuck-run alert
   when no heartbeat arrives for `PIPELINE_STUCK_MINUTES`.
 * Also shown: estimated finish time (median step times of earlier runs), Kaggle GPU quota, dataset diff against the

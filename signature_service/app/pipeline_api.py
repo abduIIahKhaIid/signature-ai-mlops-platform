@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import settings
 
@@ -78,6 +78,18 @@ class AlertPrefs(BaseModel):
     email: bool | None = None
     slack: bool | None = None
     stuck: bool | None = None
+
+
+class TrainingSettings(BaseModel):
+    epochs: int | None = Field(default=None, ge=1, le=20, description="max epochs for the next runs; null = default")
+
+
+@router.post("/v1/pipeline/settings", summary="Set max training epochs for the next runs (admin token)")
+async def pipeline_settings(body: TrainingSettings, request: Request, x_admin_token: str | None = Header(default=None)):
+    _require_admin(x_admin_token)
+    from .retrain import set_training
+
+    return await _action(set_training, _store(), settings, body.epochs, _who(request))
 
 
 @router.post("/v1/pipeline/stop", status_code=202, summary="Stop the running training run (admin token)")

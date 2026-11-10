@@ -28,7 +28,7 @@ function Pill({ tone, children }: { tone: keyof typeof TONE_PILL; children: Reac
 
 function Section({ title, aside, children, id, className = "" }: { title: string; aside?: React.ReactNode; children: React.ReactNode; id?: string; className?: string }) {
   return (
-    <section className={`panel min-w-0 p-5 ${className}`} aria-labelledby={id}>
+    <section className={`panel flex min-w-0 flex-col p-5 ${className}`} aria-labelledby={id}>
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
         <h2 id={id} className="text-[20px] font-semibold">{title}</h2>
         {aside && <div className="text-[14px] text-ink-faint">{aside}</div>}
@@ -94,8 +94,8 @@ function stoppable(state: PipelineState, run: Run | null): boolean {
 }
 
 // ---------------------------------------------------------------- admin actions (token + confirmation)
-type ActionKind = "check" | "force" | "stop" | "rollback" | "alerts";
-interface PendingAction { kind: ActionKind; body?: Record<string, boolean>; runId?: string }
+type ActionKind = "check" | "force" | "stop" | "rollback" | "alerts" | "settings";
+interface PendingAction { kind: ActionKind; body?: Record<string, boolean | number | null>; runId?: string }
 
 const ACTION_TEXT: Record<ActionKind, { title: string; intro: string; bullets?: string[]; confirm: string; danger?: boolean }> = {
   check: { title: "Check for a new dataset", intro: "This looks at the Hugging Face repo now instead of waiting for the webhook.", confirm: "Check now" },
@@ -120,6 +120,7 @@ const ACTION_TEXT: Record<ActionKind, { title: string; intro: string; bullets?: 
     danger: true,
   },
   alerts: { title: "Change alert settings", intro: "Alert settings are shared by everyone who uses this dashboard.", confirm: "Save" },
+  settings: { title: "Change training epochs", intro: "The new value is used from the next run. A run that is already training keeps its value.", confirm: "Save" },
 };
 
 function useAdmin(onDone: () => void) {
@@ -175,6 +176,7 @@ function useAdmin(onDone: () => void) {
         stop: "Stop requested. The notebook stops at its next check (about 30 seconds).",
         rollback: `Rolled back to ${body.to ?? "the previous model"}. Workers switch within a few minutes.`,
         alerts: "Alert settings saved.",
+        settings: `Saved: the next run trains for up to ${body.epochs ?? "?"} epochs.`,
       };
       setMessage({ tone: "good", text: done[action.kind] });
       setPending(null);
@@ -266,7 +268,7 @@ function RunOverview({ state, run }: { state: PipelineState; run: Run | null }) 
         </p>
         <dl className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Fact k="Last check" v={state.last_check ? `${ago(state.last_check.ts)}, ${state.last_check.source}` : "Never"} />
-          <Fact k="Training mode" v={state.config.mode === "full" ? "Full dataset" : "Smoke test (small)"} />
+          <Fact k="Training mode" v={`${state.config.mode === "full" ? "Full dataset" : "Smoke test (small)"}${state.training ? ` · up to ${state.training.epochs} epoch${state.training.epochs > 1 ? "s" : ""}` : ""}`} />
           <Fact k="GPU" v={state.config.accelerator.replace("Nvidia", "NVIDIA ")} />
           <Fact k="Deploys to alias" v={state.config.deploy_alias} />
         </dl>
@@ -363,7 +365,7 @@ function RunOverview({ state, run }: { state: PipelineState; run: Run | null }) 
       </div>
       <dl className="mt-5 grid grid-cols-2 gap-4 border-t border-desk pt-4 sm:grid-cols-3 xl:grid-cols-6">
         <Fact k="Trigger" v={`${run.trigger.source}${run.trigger.force ? " (forced)" : ""}${run.trigger.hf_sha ? ` · ${run.trigger.hf_sha.slice(0, 7)}` : ""}`} />
-        <Fact k="Mode" v={run.mode === "full" ? "Full retrain" : "Smoke test"} />
+        <Fact k="Mode" v={`${run.mode === "full" ? "Full retrain" : "Smoke test"}${run.live?.max_epochs || run.epochs ? ` · ${run.live?.max_epochs ?? run.epochs} epoch${(run.live?.max_epochs ?? run.epochs) === 1 ? "" : "s"} max` : ""}`} />
         <Fact k="Started from" v={run.served_before ? versionDate(run.served_before) ?? short(run.served_before, 26) : "Served model"} title={run.served_before ?? undefined} />
         <Fact k="Kaggle" v={run.kaggle.status ? `${run.kaggle.status}${run.kaggle.version ? ` · version ${run.kaggle.version}` : ""}` : "—"} />
         <Fact k="GPU" v={L.gpu?.name ? `${L.gpu.name}${L.gpu.allocated_gb != null ? ` · ${L.gpu.allocated_gb} GB` : ""}` : "—"} />
@@ -509,7 +511,6 @@ const mfmt = (v?: number | null) => (typeof v === "number" && v !== 0 && Math.ab
 
 function CometCard({ state, run }: { state: PipelineState; run: Run | null }) {
   const [tab, setTab] = useState<"metrics" | "params" | "console" | "files">("metrics");
-  const [showAll, setShowAll] = useState(false);
   const c: CometInfo = run?.comet || {};
   const data = run?.live?.data || {};
   const key = c.key || data.comet_key || null;
@@ -541,11 +542,11 @@ function CometCard({ state, run }: { state: PipelineState; run: Run | null }) {
     const all = (c.metrics || []).filter((m) => !/^sys\.|^system/i.test(m.name));
     const rank = (n: string) => { const i = KEY_METRICS.indexOf(n); return i < 0 ? 999 : i; };
     const sorted = [...all].sort((x, y) => rank(x.name) - rank(y.name) || x.name.localeCompare(y.name));
-    const metrics = showAll ? sorted : sorted.slice(0, 10);
+    const metrics = sorted;
     body = metrics.length ? (
-      <div className="overflow-x-auto">
+      <div>
         <table className="w-full min-w-[520px] text-left text-[14px]">
-          <thead className="text-[13px] text-ink-faint">
+          <thead className="sticky top-0 z-10 bg-paper text-[13px] text-ink-faint shadow-[0_1px_0_#E6EAF0]">
             <tr><th className="pb-2 font-normal">Metric</th><th className="pb-2 text-right font-normal">Latest</th><th className="pb-2 text-right font-normal">Best</th><th className="pb-2 pl-4 font-normal">Trend</th><th className="pb-2 font-normal">Step</th></tr>
           </thead>
           <tbody className="divide-y divide-desk">
@@ -564,11 +565,6 @@ function CometCard({ state, run }: { state: PipelineState; run: Run | null }) {
             })}
           </tbody>
         </table>
-        {sorted.length > 10 && (
-          <button type="button" className="mt-2 text-[14px] font-bold text-signal" onClick={() => setShowAll(!showAll)}>
-            {showAll ? "Show the main metrics only" : `Show all ${sorted.length} metrics`}
-          </button>
-        )}
       </div>
     ) : (
       <Empty>Experiment created. Per-epoch metrics arrive at the end of every epoch.</Empty>
@@ -588,7 +584,7 @@ function CometCard({ state, run }: { state: PipelineState; run: Run | null }) {
       <Empty>No parameters logged yet.</Empty>
     );
   } else if (tab === "console") {
-    body = <Terminal lines={(c.console || []).map((l) => ({ line: l }))} empty="Comet has not received console output yet." />;
+    body = <Terminal height="" lines={(c.console || []).map((l) => ({ line: l }))} empty="Comet has not received console output yet." />;
   } else {
     body = (c.assets || []).length ? (
       <ul className="divide-y divide-desk text-[14px]">
@@ -615,24 +611,26 @@ function CometCard({ state, run }: { state: PipelineState; run: Run | null }) {
             onClick={() => setTab(t)}
             className={`-mb-px border-b-2 px-3 py-1.5 text-[14px] font-bold ${tab === t ? "border-ink text-ink" : "border-transparent text-ink-faint hover:text-ink"}`}
           >
-            {{ metrics: "Metrics", params: "Parameters", console: "Console output", files: "Files & charts" }[t]}
+            {{ metrics: `Metrics${c.metrics?.length ? ` (${c.metrics.length})` : ""}`, params: "Parameters", console: "Console output", files: "Files & charts" }[t]}
           </button>
         ))}
       </div>
-      {body}
+      <div className="max-h-[340px] overflow-auto overscroll-contain pr-1" tabIndex={0} aria-label="Comet data, scrolls">
+        {body}
+      </div>
       {c.fetched_at && <p className="mt-2 text-[12px] text-ink-faint">Read from the Comet API {ago(c.fetched_at)}; you do not need to sign in to Comet to watch.</p>}
     </Section>
   );
 }
 
-function Terminal({ lines, empty, height = "max-h-[300px]" }: { lines: { ts?: string; line: string; tone?: string }[]; empty: string; height?: string }) {
+function Terminal({ lines, empty, height = "max-h-[300px]", fill = false }: { lines: { ts?: string; line: string; tone?: string }[]; empty: string; height?: string; fill?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useEffect(() => {
     const el = box.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [lines.length]);
-  return (
+  const term = (
     <div
       ref={box}
       tabIndex={0}
@@ -640,7 +638,7 @@ function Terminal({ lines, empty, height = "max-h-[300px]" }: { lines: { ts?: st
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
       }}
-      className={`${height} min-h-[120px] overflow-y-auto rounded-lg bg-ink px-4 py-3 font-code text-[12.5px] leading-relaxed text-white/85`}
+      className={`${fill ? "absolute inset-0" : `${height} min-h-[120px]`} overflow-y-auto rounded-lg bg-ink px-4 py-3 font-code text-[12.5px] leading-relaxed text-white/85`}
     >
       {lines.length === 0 ? (
         <p className="text-white/60">{empty}</p>
@@ -654,17 +652,23 @@ function Terminal({ lines, empty, height = "max-h-[300px]" }: { lines: { ts?: st
       )}
     </div>
   );
+  // fill: the card grows to the height of its column, and the log scrolls inside it
+  return fill ? <div className="relative min-h-[300px] flex-1">{term}</div> : term;
 }
 
-function NotebookOutput({ run }: { run: Run | null }) {
+function NotebookOutput({ run, live }: { run: Run | null; live: boolean }) {
   const lines = (run?.live?.console || []).map((c) => ({
     ts: c.ts,
     line: c.line,
     tone: /error|traceback|failed/i.test(c.line) ? "text-[#FF9A9A]" : /warning|note:|no meaningful|early stopping|stop/i.test(c.line) ? "text-[#FFD48A]" : /ok|saved best|pass|verified/i.test(c.line) ? "text-[#8FE0B6]" : "",
   }));
   return (
-    <Section title="Notebook output (live)" id="nb" aside="from the Kaggle notebook · auto-scroll">
-      <Terminal lines={lines} empty="The notebook's output appears here once it starts on Kaggle." />
+    <Section
+      title={live ? "Notebook output (live)" : "Notebook output"}
+      id="nb"
+      aside={live ? "from the Kaggle notebook · auto-scroll" : "last lines the Kaggle notebook printed in this run"}
+    >
+      <Terminal height={live ? "max-h-[300px]" : "max-h-[260px]"} lines={lines} empty="The notebook's output appears here once it starts on Kaggle." />
     </Section>
   );
 }
@@ -918,8 +922,44 @@ function RollbackCard({ state, admin }: { state: PipelineState; admin: ReturnTyp
   );
 }
 
+function TrainingSettingsCard({ state, admin }: { state: PipelineState; admin: ReturnType<typeof useAdmin> }) {
+  const t = state.training;
+  const [epochs, setEpochs] = useState<number | null>(null);
+  if (!t) return null;
+  const value = epochs ?? t.epochs;
+  const changed = value !== t.epochs;
+  const can = state.config.admin_enabled;
+  const est = secs(value * t.seconds_per_epoch);
+  const running = state.run && isLive(state.run) ? state.run.live?.max_epochs ?? state.run.epochs : null;
+  const step = (d: number) => setEpochs(Math.max(1, Math.min(t.max_epochs, value + d)));
+  return (
+    <Section title="Training epochs" id="epochs">
+      <div className="flex items-center gap-3">
+        <button type="button" className="btn-quiet h-10 w-10 justify-center p-0 text-[20px]" onClick={() => step(-1)} disabled={!can || value <= 1} aria-label="One epoch less">−</button>
+        <output className="min-w-[64px] text-center font-display text-[32px] font-bold leading-none tnum" aria-live="polite">{value}</output>
+        <button type="button" className="btn-quiet h-10 w-10 justify-center p-0 text-[20px]" onClick={() => step(1)} disabled={!can || value >= t.max_epochs} aria-label="One epoch more">+</button>
+        <span className="text-[14px] text-ink-soft">max epochs<br /><span className="text-ink-faint">≈ {est} of training</span></span>
+      </div>
+      <p className="mt-3 text-[13px] text-ink-faint">
+        {changed ? "Not saved yet. " : `Now: ${t.source}. `}Applies from the next run{running ? ` (the current run keeps ${running})` : ""}. Early stopping can still end training sooner if validation stops improving. Kaggle stops a notebook after 12 h.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" className="btn-primary" disabled={!can || !changed} onClick={() => admin.request({ kind: "settings", body: { epochs: value } })}>
+          Save {value} epoch{value > 1 ? "s" : ""}
+        </button>
+        {t.source === "dashboard" && (
+          <button type="button" className="btn-quiet" disabled={!can} onClick={() => { setEpochs(null); admin.request({ kind: "settings", body: { epochs: null } }); }}>
+            Back to default ({t.env_epochs ?? t.mode_default})
+          </button>
+        )}
+        {changed && <button type="button" className="btn-quiet" onClick={() => setEpochs(null)}>Cancel</button>}
+      </div>
+    </Section>
+  );
+}
+
 // ---------------------------------------------------------------- event log, decisions, history
-function EventLog({ state, run }: { state: PipelineState; run: Run | null }) {
+function EventLog({ state, run, className = "" }: { state: PipelineState; run: Run | null; className?: string }) {
   const events = useMemo(() => {
     const evs = (run?.events ?? []).map((e) => ({ ts: e.ts, source: e.source, message: e.message, level: e.level }));
     const since = run ? Date.parse(run.created_at) - 60_000 : 0;
@@ -930,9 +970,9 @@ function EventLog({ state, run }: { state: PipelineState; run: Run | null }) {
   }, [run?.events, state.audit, run]);
   const src = { kaggle: "text-[#8FE0B6]", admin: "text-[#FFD48A]", ec2: "text-[#9FB8FF]" } as Record<string, string>;
   return (
-    <Section title="Event log" id="log" aside="EC2 + Kaggle + admin actions">
+    <Section title="Event log" id="log" aside="EC2 + Kaggle + admin actions" className={className}>
       <Terminal
-        height="max-h-[340px]"
+        fill
         empty="No events yet."
         lines={events.map((e) => ({
           ts: e.ts,
@@ -944,25 +984,29 @@ function EventLog({ state, run }: { state: PipelineState; run: Run | null }) {
   );
 }
 
-function Decisions({ state }: { state: PipelineState }) {
-  const list = state.decisions.slice(0, 12);
+function Decisions({ state, className = "" }: { state: PipelineState; className?: string }) {
+  const list = state.decisions.slice(0, 20);
   return (
-    <Section title="Why runs started or not" id="decisions">
+    <Section title="Why runs started or not" id="decisions" className={className}>
       {list.length === 0 ? (
         <Empty>No triggers yet. Uploads, webhooks and button presses are listed here with the decision that was made.</Empty>
       ) : (
-        <ul className="divide-y divide-desk">
-          {list.map((d, i) => {
-            const meta = DECISION[d.decision] ?? { label: d.decision, tone: "plain" as const };
-            return (
-              <li key={i} className="grid gap-x-4 gap-y-1 py-2.5 sm:grid-cols-[80px_140px_1fr]">
-                <span className="text-[13px] text-ink-faint tnum" title={d.ts}>{ago(d.ts)}</span>
-                <span><Pill tone={meta.tone}>{meta.label}</Pill></span>
-                <span className="min-w-0 break-words text-[14px] text-ink-soft [overflow-wrap:anywhere]">{d.message}</span>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="relative min-h-[260px] flex-1">
+          <ul className="absolute inset-0 divide-y divide-desk overflow-y-auto overscroll-contain pr-1" tabIndex={0} aria-label="Trigger decisions, scrolls">
+            {list.map((d, i) => {
+              const meta = DECISION[d.decision] ?? { label: d.decision, tone: "plain" as const };
+              return (
+                <li key={i} className="py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Pill tone={meta.tone}>{meta.label}</Pill>
+                    <span className="text-[13px] text-ink-faint tnum" title={d.ts}>{ago(d.ts)}</span>
+                  </div>
+                  <p className="mt-1 min-w-0 break-words text-[13.5px] text-ink-soft [overflow-wrap:anywhere]">{d.message}</p>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
     </Section>
   );
@@ -1093,6 +1137,10 @@ export default function PipelinePage() {
   const viewingOld = pinned && pinned !== state.active_run_id;
   const q = state.kaggle_quota;
   const canStop = stoppable(state, run) && !viewingOld;
+  // Notebook output: next to the charts while the model trains; after training it moves to the bottom; hidden before
+  const trainSt = run?.phases.training?.status;
+  const notebookPlace: "live" | "after" | null =
+    trainSt === "running" && isLive(run) ? "live" : run && (run.live?.console?.length ?? 0) > 0 && trainSt && trainSt !== "pending" ? "after" : null;
 
   return (
     <div className="space-y-5">
@@ -1179,34 +1227,34 @@ export default function PipelinePage() {
         </section>
       )}
 
+      {/* Two columns that stack independently, so sections sit directly under each other. The last card of each
+          column (Why runs started / Event log) stretches to the column height, so no gap is left at the end. */}
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <section className="panel h-fit p-5" aria-labelledby="steps-title">
-          <div className="mb-3 flex items-baseline justify-between"><h2 id="steps-title" className="text-[20px] font-semibold">Steps</h2><span className="text-[13px] text-ink-faint">time per step</span></div>
-          <Steps phases={state.phases} run={run} eta={state.eta} />
-        </section>
-        <div className="min-w-0 space-y-5">
+        <div className="flex min-w-0 flex-col gap-5">
+          <section className="panel p-5" aria-labelledby="steps-title">
+            <div className="mb-3 flex items-baseline justify-between"><h2 id="steps-title" className="text-[20px] font-semibold">Steps</h2><span className="text-[13px] text-ink-faint">time per step</span></div>
+            <Steps phases={state.phases} run={run} eta={state.eta} />
+          </section>
+          <LineageCard state={state} />
+          <TrainingSettingsCard state={state} admin={admin} />
+          <AlertsCard state={state} admin={admin} />
+          <RollbackCard state={state} admin={admin} />
+          <Decisions state={state} className="flex-1" />
+        </div>
+        <div className="flex min-w-0 flex-col gap-5">
+          <div className="grid gap-5 lg:grid-cols-2">
+            <DatasetCard state={state} run={run} />
+            <CleaningCard run={run} />
+          </div>
           <TrainingCard state={state} run={run} />
           <CometCard state={state} run={run} />
-          <NotebookOutput run={run} />
+          {notebookPlace === "live" && <NotebookOutput run={run} live />}
+          <EvaluationCard state={state} run={run} />
+          <EventLog state={state} run={run} className="flex-1" />
         </div>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-3">
-        <DatasetCard state={state} run={run} />
-        <CleaningCard run={run} />
-        <LineageCard state={state} />
-      </div>
-
-      <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr_1fr]">
-        <EvaluationCard state={state} run={run} />
-        <AlertsCard state={state} admin={admin} />
-        <RollbackCard state={state} admin={admin} />
-      </div>
-
-      <div className="grid gap-5 xl:grid-cols-[1.3fr_1fr]">
-        <EventLog state={state} run={run} />
-        <Decisions state={state} />
-      </div>
+      {notebookPlace === "after" && <NotebookOutput run={run} live={false} />}
 
       <History state={state} selected={run?.id} onSelect={setPinned} />
 

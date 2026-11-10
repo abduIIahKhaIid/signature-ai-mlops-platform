@@ -96,12 +96,23 @@ export interface CometInfo {
   fetched_at?: string;
 }
 
+export interface TrainingSettings {
+  epochs: number;
+  source: string;
+  mode: string;
+  mode_default: number;
+  env_epochs?: number | null;
+  max_epochs: number;
+  seconds_per_epoch: number;
+}
+
 export interface Run {
   id: string;
   status: RunStatus;
   created_at: string;
   finished_at?: string | null;
   mode: string;
+  epochs?: number;
   trigger: { source: string; hf_sha?: string; force?: boolean; note?: string };
   dataset: {
     repo: string; commit: string; url: string; zip: string; size_bytes: number; sha256?: string; fingerprint: string;
@@ -154,6 +165,7 @@ export interface PipelineState {
   audit?: AuditEntry[];
   rollback_to?: string | null;
   kaggle_quota?: { used_hours?: number; total_hours?: number; remaining_hours?: number; refresh_at?: string | null; error?: string } | null;
+  training?: TrainingSettings;
   alerts?: { channels: { email: boolean; slack: boolean }; prefs: { email: boolean; slack: boolean; stuck: boolean } };
   last_webhook_at?: string | null;
   active_run_id: string | null;

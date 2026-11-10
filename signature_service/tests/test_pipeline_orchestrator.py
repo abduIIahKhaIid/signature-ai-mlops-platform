@@ -408,3 +408,26 @@ def test_dashboard_has_eta_lineage_and_actions(env):
     assert state["rollback_to"] == "v-older"
     assert set(state["alerts"]["prefs"]) == {"email", "slack", "stuck"}
     json.dumps(state, allow_nan=False)
+
+
+def test_epochs_from_the_dashboard_reach_the_notebook(env):
+    from app.retrain import ActionError, set_training, training_settings
+
+    assert training_settings(env.store, env.cfg)["epochs"] == 8 and "default" in training_settings(env.store, env.cfg)["source"]
+    with pytest.raises(ActionError):
+        set_training(env.store, env.cfg, 99, "test")
+    out = set_training(env.store, env.cfg, 5, "test")
+    assert out["epochs"] == 5 and out["source"] == "dashboard"
+    assert "max epochs 8 -> 5" in env.store.audit_log()[0]["detail"]
+    env.hf.upload("export_nov10.zip", SHA_A, "commit-1")
+    assert env.orch.request_check("webhook", hf_sha="commit-1")["decision"] == "started"
+    overrides = env.kaggle.pushes[-1]
+    assert "EPOCHS = 5" in overrides and "EARLY_STOPPING_PATIENCE = 2" in overrides
+    assert env.store.get_run(env.store.active())["epochs"] == 5
+    assert dashboard_state(env.store, env.cfg)["training"]["epochs"] == 5
+    # back to the default for the next run; the running run keeps 5
+    assert set_training(env.store, env.cfg, None, "test")["epochs"] == 8
+    assert env.store.get_run(env.store.active())["epochs"] == 5
+    # RETRAIN_EPOCHS in .env is used when the dashboard has no value
+    cfg = dataclasses.replace(env.cfg, retrain_epochs=3)
+    assert training_settings(env.store, cfg)["epochs"] == 3

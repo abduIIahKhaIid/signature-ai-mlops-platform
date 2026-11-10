@@ -500,9 +500,10 @@ class Orchestrator:
                 kaggle_job.push_secrets(self.kaggle.secrets_dataset, values, wait_seconds=300)
                 event(run, f"Kaggle secrets synced from the server .env ({', '.join(sorted(values))})")
 
+            run["epochs"] = training_settings(self.store, self.cfg, run["mode"])["epochs"]
             build = Path(self.cfg.pipeline_work_dir) / run["id"] / "kaggle"
             kaggle_job.cmd_build(types.SimpleNamespace(
-                kernel=self.kaggle.kernel, mode=run["mode"], hf_repo=ds["repo"], hf_zip=ds["zip"],
+                kernel=self.kaggle.kernel, mode=run["mode"], epochs=run["epochs"], hf_repo=ds["repo"], hf_zip=ds["zip"],
                 hf_revision=ds["commit"], secrets_dataset=self.kaggle.secrets_dataset, deploy_alias=self.alias,
                 no_deploy=False, gate_floor=self.cfg.gate_min_test_map50, gate_max_regression=self.cfg.gate_max_regression,
                 gate_max_val_test_gap=self.cfg.gate_max_val_test_gap, comet_project=self.cfg.comet_project,
@@ -849,7 +850,7 @@ def rollback(store: PipelineStore, s3, cfg, who: str) -> dict:
     s3.put_object(Bucket=cfg.model_s3_bucket, Key=f"{prefix}/aliases/{alias}.json", Body=json.dumps(body, indent=2).encode(),
                   ContentType="application/json", ServerSideEncryption="AES256")
     store.audit("rollback", f"alias '{alias}': {current['version']} -> {target}; workers switch within "
-                            f"{cfg.model_poll_seconds // 60} min", who)
+                            f"{max(1, round(cfg.model_poll_seconds / 60))} min", who)
     store.r.delete("pipeline:serving")  # the next tick re-reads the alias and asks a worker what it serves
     return {"alias": alias, "from": current["version"], "to": target}
 
@@ -861,6 +862,40 @@ def set_alerts(store: PipelineStore, prefs: dict, who: str) -> dict:
     store.set_json("alerts", current)
     store.audit("alerts", ", ".join(f"{k} {'on' if v else 'off'}" for k, v in changed.items()) or "no change", who)
     return current
+
+
+MODE_EPOCHS = {"smoke": 1, "full": 8}
+MAX_EPOCHS = 20  # Kaggle stops a notebook after 12 h; full mode takes about 25-30 min per epoch on a T4
+EPOCH_SECONDS = {"smoke": 360, "full": 1650}
+
+
+def training_settings(store: PipelineStore, cfg, mode: str | None = None) -> dict:
+    """Max epochs for the next run: dashboard setting, else RETRAIN_EPOCHS, else the mode's default."""
+    mode = mode or cfg.retrain_mode
+    saved = (store.get_json("training") or {}).get("epochs")
+    if saved:
+        epochs, source = int(saved), "dashboard"
+    elif cfg.retrain_epochs:
+        epochs, source = int(cfg.retrain_epochs), "RETRAIN_EPOCHS in .env"
+    else:
+        epochs, source = MODE_EPOCHS.get(mode, 8), f"{mode} mode default"
+    epochs = max(1, min(MAX_EPOCHS, epochs))
+    return {"epochs": epochs, "source": source, "mode": mode, "mode_default": MODE_EPOCHS.get(mode, 8),
+            "env_epochs": cfg.retrain_epochs, "max_epochs": MAX_EPOCHS, "seconds_per_epoch": EPOCH_SECONDS.get(mode, 1650)}
+
+
+def set_training(store: PipelineStore, cfg, epochs: int | None, who: str) -> dict:
+    """Save max epochs for the next runs (None = back to RETRAIN_EPOCHS / the mode default). A running run keeps its value."""
+    before = training_settings(store, cfg)["epochs"]
+    if epochs is None:
+        store.set_json("training", {})
+    else:
+        if not 1 <= int(epochs) <= MAX_EPOCHS:
+            raise ActionError(f"epochs must be between 1 and {MAX_EPOCHS}")
+        store.set_json("training", {"epochs": int(epochs)})
+    after = training_settings(store, cfg)
+    store.audit("training", f"max epochs {before} -> {after['epochs']} ({after['source']}); applies from the next run", who)
+    return after
 
 
 # ===================================================================== dashboard read model
@@ -890,9 +925,11 @@ def estimate_finish(run: dict, history: list[dict], now: float) -> dict | None:
         samples = sorted(x for x in (_phase_seconds(r, key) for r in done) if x is not None)
         typical = samples[len(samples) // 2] if samples else (
             TRAINING_DEFAULT_SECONDS.get(run.get("mode"), 3600) if key == "training" else DEFAULT_PHASE_SECONDS.get(key, 30))
+        if key == "training" and not samples and run.get("epochs"):
+            typical = EPOCH_SECONDS.get(run.get("mode"), 1650) * run["epochs"]
         if key == "training":
             eps = ((run.get("live") or {}).get("epochs") or [])
-            max_ep = (run.get("live") or {}).get("max_epochs")
+            max_ep = (run.get("live") or {}).get("max_epochs") or run.get("epochs")
             secs = [e.get("epoch_seconds") for e in eps if isinstance(e.get("epoch_seconds"), (int, float))]
             if secs and max_ep:
                 typical = sum(secs) / len(secs) * max_ep  # upper bound: early stopping may end sooner
@@ -970,6 +1007,7 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
         "serving": serving,
         "rollback_to": (serving.get("alias") or {}).get("previous_version"),
         "kaggle_quota": store.get_json("kaggle_quota"),
+        "training": training_settings(store, cfg),
         "alerts": {"channels": channels, "prefs": {"email": alert_prefs.get("email", channels["email"]),
                                                    "slack": alert_prefs.get("slack", channels["slack"]),
                                                    "stuck": alert_prefs.get("stuck", True)}},
