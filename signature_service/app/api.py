@@ -25,11 +25,13 @@ app = FastAPI(
 observability.instrument_fastapi(app)
 API_STARTED = time.time()
 
+from . import web  # noqa: E402
 from .pipeline_api import router as pipeline_router  # noqa: E402
 from .webhooks import router as webhooks_router  # noqa: E402
 
 app.include_router(webhooks_router)
 app.include_router(pipeline_router)
+web.mount(app)  # React app: / (detect), /verify, /pipeline
 
 ALLOWED_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
                  "image/bmp": ".bmp", "image/tiff": ".tif"}

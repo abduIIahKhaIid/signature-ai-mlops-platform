@@ -1,3 +1,12 @@
+# Stage 1: build the React web app (signature_service/web) into static files
+FROM node:20-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: the API (no torch, no model code). Serves the API and the web app.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
@@ -7,6 +16,7 @@ COPY requirements-api.txt .
 RUN pip install -r requirements-api.txt
 
 COPY app ./app
+COPY --from=web /web/dist ./app/static/web
 RUN useradd --uid 10001 --create-home appuser && mkdir -p /data/uploads && chown -R appuser /data
 USER appuser
 

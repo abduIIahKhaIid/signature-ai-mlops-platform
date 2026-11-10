@@ -5,6 +5,8 @@ scores signature similarity (Siamese ResNet18), serves both through **FastAPI + 
 and retrains automatically on a Kaggle GPU when the Hugging Face dataset changes.
 Experiments are tracked in **Comet**, models are versioned in **Amazon S3**, logs and traces go to **Logfire**.
 
+**Live:** web app <http://13.236.244.226:8000/> (Detect, Verify, Pipeline) · API docs <http://13.236.244.226:8000/docs>
+
 ## Two automated flows, and nothing else
 
 | Flow | Trigger | Runs where | What it changes |
@@ -33,7 +35,8 @@ GitHub Actions never trains a model, and the retraining never touches the code.
 .
 ├── .github/workflows/ci-cd.yml     CI (tests, checks, Docker builds) + CD to EC2. The only workflow.
 ├── signature_service/              Everything that runs on EC2
-│   ├── app/                        FastAPI API, Celery inference tasks, retraining orchestrator, webhooks, dashboard
+│   ├── app/                        FastAPI API, Celery inference tasks, retraining orchestrator, webhooks
+│   ├── web/                        React web app: Detect (/), Verify (/verify), Pipeline dashboard (/pipeline)
 │   ├── docker/                     api / worker / pipeline Dockerfiles
 │   ├── docker-compose.yml          redis + api + worker + pipeline (+ optional Caddy HTTPS)
 │   ├── deploy/                     EC2 user data, remote_deploy.sh (run by CD), IAM policies, Caddyfile
@@ -67,7 +70,7 @@ dashboard working data (`.signature-dashboard/`), `node_modules/`.
 | make every `git push` deploy to EC2 (GitHub secrets, SSM, IAM) | [`docs/setup/cicd_github_secrets.md`](docs/setup/cicd_github_secrets.md) |
 | create the EC2 server from zero | [`docs/setup/deploy_ec2.md`](docs/setup/deploy_ec2.md) |
 | set up retraining (HF webhook → EC2 → Kaggle) | [`docs/setup/retraining_pipeline.md`](docs/setup/retraining_pipeline.md) |
-| use the API, run locally, load test | [`signature_service/README.md`](signature_service/README.md) |
+| use the web app, the API, run locally, load test | [`signature_service/README.md`](signature_service/README.md) |
 | use the dataset dashboard | [`dataset_dashboard/README.md`](dataset_dashboard/README.md) |
 | see measured results | [`docs/results/`](docs/results/) |
 

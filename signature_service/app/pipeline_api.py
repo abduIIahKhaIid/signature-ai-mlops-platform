@@ -24,7 +24,11 @@ def _store():
 
 @router.get("/pipeline", response_class=HTMLResponse, include_in_schema=False)
 async def pipeline_dashboard():
-    return HTMLResponse(DASHBOARD.read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
+    from .web import index_html
+
+    # the React app when it is built (Docker image), otherwise the classic single-file dashboard
+    html = index_html() or DASHBOARD.read_text(encoding="utf-8")
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/v1/pipeline/state", summary="Live retraining pipeline state (dashboard data)")

@@ -29,6 +29,26 @@ client ──HTTP──▶ FastAPI (api) ──job id──▶ Redis (broker) �
 * Retry demo: set `ALLOW_FAILURE_SIMULATION=true`, then `POST /v1/detect?simulate_failures=2` shows
   `RETRY → RETRY → SUCCESS`; `simulate_failures=5` (more than `MAX_RETRIES`) ends in `FAILURE`.
 
+## Web app
+
+The API also serves a React web app (`web/`, built into the API image by `docker/api.Dockerfile`):
+
+| Page | What it does |
+|---|---|
+| `/` **Detect** | Upload or paste a document image: signature boxes drawn on the page, confidence per signature with a live minimum-confidence slider, close-up crops, the request's path (upload → queue → worker → result) with measured times, download of the marked image or JSON |
+| `/verify` **Verify** | Reference + questioned signature (cropped or whole documents): similarity score, match line, verdict, which region was compared |
+| `/pipeline` **Pipeline** | Retraining dashboard: live run, steps, dataset cleaning, training curves, evaluation and deployment gate, event log, run history, admin buttons |
+
+It only uses the public API (`/v1/detect`, `/v1/verify`, `/v1/jobs/{id}`, `/v1/model`, `/ready`, `/v1/pipeline/*`).
+Develop it against any running API, e.g. the EC2 server:
+
+```bash
+cd signature_service/web
+npm install
+API_TARGET=http://13.236.244.226:8000 npm run dev     # http://localhost:5173
+npm run build                                        # type check + production build (CI runs this too)
+```
+
 ## Endpoints
 
 | Method | Path | Purpose |

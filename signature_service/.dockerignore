@@ -9,3 +9,6 @@ models
 *.pth
 *.onnx
 *.safetensors
+web/node_modules
+web/dist
+app/static/web

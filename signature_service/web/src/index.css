@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { color-scheme: light; }
+  body {
+    @apply bg-desk font-sans text-ink antialiased;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  h1, h2, h3 { @apply font-display text-ink; font-optical-sizing: auto; }
+  :focus-visible { outline: 2px solid #2F5BD3; outline-offset: 2px; border-radius: 4px; }
+  .tnum { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-[15px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary { @apply btn bg-ink text-white hover:bg-ink-soft; }
+  .btn-quiet { @apply btn border border-desk-line bg-paper text-ink hover:bg-desk; }
+  .btn-danger { @apply btn border border-marker/40 bg-paper text-marker hover:bg-marker-soft; }
+  .panel { @apply rounded-xl bg-paper shadow-lift; }
+  .field-label { @apply text-[13px] font-bold text-ink-soft; }
+  .pill { @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[13px] font-bold; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+/* The one orchestrated moment: boxes are drawn on like a marker sweep once the model answers. */
+.sheet-box { animation: sweep .55s cubic-bezier(.6,0,.2,1) both; }
+@keyframes sweep { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+
+/* While the job is queued or running: a light band passes over the page. */
+.scanline {
+  background: linear-gradient(180deg, rgba(47,91,211,0) 0%, rgba(47,91,211,.16) 70%, rgba(47,91,211,.55) 100%);
+  border-bottom: 2px solid rgba(47,91,211,.8);
+  animation: scan 1.8s cubic-bezier(.45,0,.55,1) infinite;
+}
+@keyframes scan { from { top: -6rem; } to { top: 100%; } }

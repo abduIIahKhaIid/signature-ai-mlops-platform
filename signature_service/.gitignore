@@ -9,3 +9,8 @@ __pycache__/
 *.safetensors
 models/
 loadtest/results/
+
+# web app: dependencies and build output (built inside docker/api.Dockerfile)
+web/node_modules/
+web/dist/
+app/static/web/
