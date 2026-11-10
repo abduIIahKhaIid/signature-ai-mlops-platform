@@ -124,7 +124,7 @@ export interface Run {
   live?: {
     current?: string | null; progress?: Progress[]; epochs?: Epoch[]; max_epochs?: number; status?: string;
     gpu?: { name?: string; allocated_gb?: number; reserved_gb?: number }; data?: LiveData; updated_at?: string;
-    console?: { ts: string; line: string }[];
+    console?: { ts: string; line: string; stream?: string }[];
   } | null;
   comet?: CometInfo;
   stop_requested_at?: string | null;

@@ -431,3 +431,13 @@ def test_epochs_from_the_dashboard_reach_the_notebook(env):
     # RETRAIN_EPOCHS in .env is used when the dashboard has no value
     cfg = dataclasses.replace(env.cfg, retrain_epochs=3)
     assert training_settings(env.store, cfg)["epochs"] == 3
+
+
+def test_project_name_in_comet_workspace_is_ignored_not_fatal(env):
+    # COMET_WORKSPACE=signature-ai-detection-retrain (the project) once crashed the Kaggle run at the Comet preflight
+    env.orch.cfg = dataclasses.replace(env.cfg, comet_workspace=env.cfg.comet_project)
+    env.hf.upload("a.zip", SHA_A, "commit-1")
+    run_id = env.orch.request_check("webhook")["run_id"]
+    run = env.store.get_run(run_id)
+    assert any(e["level"] == "warning" and "project name" in e["message"] for e in run["events"])
+    assert "COMET_WORKSPACE_NAME = None" in env.kaggle.pushes[0]

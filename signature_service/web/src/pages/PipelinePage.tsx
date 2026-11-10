@@ -656,19 +656,34 @@ function Terminal({ lines, empty, height = "max-h-[300px]", fill = false }: { li
   return fill ? <div className="relative min-h-[300px] flex-1">{term}</div> : term;
 }
 
-function NotebookOutput({ run, live }: { run: Run | null; live: boolean }) {
-  const lines = (run?.live?.console || []).map((c) => ({
+function NotebookOutput({ run, live, fill = false, className = "" }: { run: Run | null; live: boolean; fill?: boolean; className?: string }) {
+  const console_ = run?.live?.console || [];
+  const lines = console_.map((c) => ({
     ts: c.ts,
     line: c.line,
-    tone: /error|traceback|failed/i.test(c.line) ? "text-[#FF9A9A]" : /warning|note:|no meaningful|early stopping|stop/i.test(c.line) ? "text-[#FFD48A]" : /ok|saved best|pass|verified/i.test(c.line) ? "text-[#8FE0B6]" : "",
+    tone: /error|traceback|exception|failed/i.test(c.line)
+      ? "text-[#FF9A9A]"
+      : /warning|note:|no meaningful|early stopping|stop/i.test(c.line) || c.stream === "stderr"
+        ? "text-[#FFD48A]"
+        : /\bok\b|saved best|pass|verified/i.test(c.line)
+          ? "text-[#8FE0B6]"
+          : "",
   }));
+  // A run that failed before the notebook could report its own error: show the end of the Kaggle log as well.
+  if (run?.status === "failed" && run.log_tail && !console_.some((c) => /traceback/i.test(c.line))) {
+    lines.push({ ts: run.finished_at ?? "", line: "──── end of the Kaggle log ────", tone: "text-white/50" });
+    for (const l of run.log_tail.split("\n").filter((x) => x.trim()).slice(-40)) {
+      lines.push({ ts: "", line: l, tone: /error|traceback|exception/i.test(l) ? "text-[#FF9A9A]" : "text-white/70" });
+    }
+  }
   return (
     <Section
       title={live ? "Notebook output (live)" : "Notebook output"}
       id="nb"
-      aside={live ? "from the Kaggle notebook · auto-scroll" : "last lines the Kaggle notebook printed in this run"}
+      className={className}
+      aside={live ? "what the Kaggle notebook prints, every few seconds, auto-scroll" : run ? "everything the Kaggle notebook printed in this run" : undefined}
     >
-      <Terminal height={live ? "max-h-[300px]" : "max-h-[260px]"} lines={lines} empty="The notebook's output appears here once it starts on Kaggle." />
+      <Terminal fill={fill} height="max-h-[300px]" lines={lines} empty={run ? "The notebook's output appears here as soon as it starts on Kaggle." : "No run yet."} />
     </Section>
   );
 }
@@ -959,7 +974,7 @@ function TrainingSettingsCard({ state, admin }: { state: PipelineState; admin: R
 }
 
 // ---------------------------------------------------------------- event log, decisions, history
-function EventLog({ state, run, className = "" }: { state: PipelineState; run: Run | null; className?: string }) {
+function EventLog({ state, run, className = "", fill = true }: { state: PipelineState; run: Run | null; className?: string; fill?: boolean }) {
   const events = useMemo(() => {
     const evs = (run?.events ?? []).map((e) => ({ ts: e.ts, source: e.source, message: e.message, level: e.level }));
     const since = run ? Date.parse(run.created_at) - 60_000 : 0;
@@ -972,7 +987,8 @@ function EventLog({ state, run, className = "" }: { state: PipelineState; run: R
   return (
     <Section title="Event log" id="log" aside="EC2 + Kaggle + admin actions" className={className}>
       <Terminal
-        fill
+        fill={fill}
+        height="max-h-[260px]"
         empty="No events yet."
         lines={events.map((e) => ({
           ts: e.ts,
@@ -1137,10 +1153,6 @@ export default function PipelinePage() {
   const viewingOld = pinned && pinned !== state.active_run_id;
   const q = state.kaggle_quota;
   const canStop = stoppable(state, run) && !viewingOld;
-  // Notebook output: next to the charts while the model trains; after training it moves to the bottom; hidden before
-  const trainSt = run?.phases.training?.status;
-  const notebookPlace: "live" | "after" | null =
-    trainSt === "running" && isLive(run) ? "live" : run && (run.live?.console?.length ?? 0) > 0 && trainSt && trainSt !== "pending" ? "after" : null;
 
   return (
     <div className="space-y-5">
@@ -1228,7 +1240,7 @@ export default function PipelinePage() {
       )}
 
       {/* Two columns that stack independently, so sections sit directly under each other. The last card of each
-          column (Why runs started / Event log) stretches to the column height, so no gap is left at the end. */}
+          column (Why runs started / Notebook output) stretches to the column height, so no gap is left at the end. */}
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-5">
           <section className="panel p-5" aria-labelledby="steps-title">
@@ -1248,13 +1260,12 @@ export default function PipelinePage() {
           </div>
           <TrainingCard state={state} run={run} />
           <CometCard state={state} run={run} />
-          {notebookPlace === "live" && <NotebookOutput run={run} live />}
           <EvaluationCard state={state} run={run} />
-          <EventLog state={state} run={run} className="flex-1" />
+          <NotebookOutput run={run} live={isLive(run)} fill className="flex-1" />
         </div>
       </div>
 
-      {notebookPlace === "after" && <NotebookOutput run={run} live={false} />}
+      <EventLog state={state} run={run} fill={false} />
 
       <History state={state} selected={run?.id} onSelect={setPinned} />
 

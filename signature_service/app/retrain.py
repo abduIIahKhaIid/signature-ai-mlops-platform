@@ -477,10 +477,16 @@ class Orchestrator:
             return f"Comet workspace '{ws}' does not belong to this COMET_API_KEY (its workspaces: {', '.join(workspaces) or 'none'})"
         return None
 
+    def comet_workspace_setting(self) -> str | None:
+        """COMET_WORKSPACE from .env, unless it is obviously the project name (a common mix-up): then None, so the
+        notebook uses the API key's own workspace instead of failing the GPU run."""
+        ws = self.cfg.comet_workspace
+        return None if ws and ws == self.cfg.comet_project else ws
+
     def secrets_sync_values(self) -> dict | None:
         """Secrets for the Kaggle notebook, when the .env has all of them (else the existing dataset is used)."""
         c = self.cfg
-        values = {"COMET_API_KEY": c.comet_api_key, "COMET_WORKSPACE": c.comet_workspace, "HF_TOKEN": c.hf_token,
+        values = {"COMET_API_KEY": c.comet_api_key, "COMET_WORKSPACE": self.comet_workspace_setting(), "HF_TOKEN": c.hf_token,
                   "AWS_ACCESS_KEY_ID": c.notebook_aws_access_key_id, "AWS_SECRET_ACCESS_KEY": c.notebook_aws_secret_access_key,
                   "AWS_REGION": c.notebook_aws_region, "AWS_S3_BUCKET": c.model_s3_bucket}
         if not all(values[k] for k in ("COMET_API_KEY", "HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
@@ -500,6 +506,9 @@ class Orchestrator:
                 kaggle_job.push_secrets(self.kaggle.secrets_dataset, values, wait_seconds=300)
                 event(run, f"Kaggle secrets synced from the server .env ({', '.join(sorted(values))})")
 
+            if self.cfg.comet_workspace and self.comet_workspace_setting() is None:
+                event(run, f"COMET_WORKSPACE in .env is the project name '{self.cfg.comet_workspace}'; ignored, the notebook "
+                           "uses the Comet API key's own workspace. Set COMET_WORKSPACE=<your Comet workspace> in .env.", "warning")
             run["epochs"] = training_settings(self.store, self.cfg, run["mode"])["epochs"]
             build = Path(self.cfg.pipeline_work_dir) / run["id"] / "kaggle"
             kaggle_job.cmd_build(types.SimpleNamespace(
@@ -507,7 +516,7 @@ class Orchestrator:
                 hf_revision=ds["commit"], secrets_dataset=self.kaggle.secrets_dataset, deploy_alias=self.alias,
                 no_deploy=False, gate_floor=self.cfg.gate_min_test_map50, gate_max_regression=self.cfg.gate_max_regression,
                 gate_max_val_test_gap=self.cfg.gate_max_val_test_gap, comet_project=self.cfg.comet_project,
-                comet_workspace=self.cfg.comet_workspace,
+                comet_workspace=self.comet_workspace_setting(),
                 github_run_url=None, run_id=run["id"], dataset_fingerprint=ds["fingerprint"],
                 expected_sha256=ds["sha256"], out=str(build)))
             pushed = self.kaggle.push(build)

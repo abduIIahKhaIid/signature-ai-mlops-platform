@@ -304,26 +304,42 @@ def live_data(**kw):
     _LIVE['data'].update(_jsonable(kw))
     live_flush()
 
+_LIVE_DIRTY = [False]
+
 def _live_heartbeat():
+    # new notebook output is pushed within ~5 s; the full status (stop request check) every 20 s
+    last_full = _time.time()
     while _LIVE.get('status') == 'running':
-        _time.sleep(20)
-        _check_stop()
-        live_flush()
+        _time.sleep(5)
+        if _time.time() - last_full >= 20:
+            last_full = _time.time()
+            _check_stop()
+            _LIVE_DIRTY[0] = False
+            live_flush()
+        elif _LIVE_DIRTY[0]:
+            _LIVE_DIRTY[0] = False
+            live_flush()
+
+def _console_add(line, stream='stdout'):
+    _LIVE['console'].append({'ts': _now_iso(), 'line': line[:400], 'stream': stream})
+    if len(_LIVE['console']) > 400:
+        del _LIVE['console'][:-400]
+    _LIVE_DIRTY[0] = True
 
 class _ConsoleTee:
-    \"\"\"Keeps the last notebook output lines for the dashboard's 'Notebook output' panel (stdout only).\"\"\"
-    def __init__(self, stream):
-        self._stream, self._buf = stream, ''
+    \"\"\"Copies what the notebook prints (stdout and stderr) into the dashboard's live 'Notebook output' panel.\"\"\"
+    def __init__(self, stream, name='stdout'):
+        self._stream, self._buf, self._name = stream, '', name
     def write(self, text):
         try:
             self._buf += text
-            *lines, self._buf = self._buf.split('\\n')
+            *lines, self._buf = self._buf.split(chr(10))
             for line in lines:
-                line = line.split('\\r')[-1].rstrip()
+                line = line.split(chr(13))[-1].rstrip()   # progress bars redraw with \\r: keep the final state
                 if line:
-                    _LIVE['console'].append({'ts': _now_iso(), 'line': line[:400]})
-            if len(_LIVE['console']) > 150:
-                del _LIVE['console'][:-150]
+                    _console_add(line, self._name)
+            if len(self._buf) > 4000:                     # a bar that never ends its line
+                self._buf = self._buf.split(chr(13))[-1][-1000:]
         except Exception:
             pass
         return self._stream.write(text)
@@ -334,7 +350,23 @@ class _ConsoleTee:
 
 if LIVE_PROGRESS and PIPELINE_RUN_ID:
     if not isinstance(sys.stdout, _ConsoleTee):
-        sys.stdout = _ConsoleTee(sys.stdout)
+        sys.stdout = _ConsoleTee(sys.stdout, 'stdout')
+    if not isinstance(sys.stderr, _ConsoleTee):
+        sys.stderr = _ConsoleTee(sys.stderr, 'stderr')
+    try:  # a failing cell: its traceback goes to the output panel and is uploaded at once, before Kaggle ends the session
+        def _on_cell_error(result):
+            err = result.error_in_exec or result.error_before_exec
+            if err is None or isinstance(err, PipelineStopped):
+                return
+            import traceback as _tb
+            for _l in ''.join(_tb.format_exception(type(err), err, err.__traceback__)).splitlines()[-25:]:
+                _console_add(_l, 'stderr')
+            live_event(f'notebook error: {type(err).__name__}: {str(err)[:300]}', 'error')
+            live_flush()
+        from IPython import get_ipython as _get_ipython
+        _get_ipython().events.register('post_run_cell', _on_cell_error)
+    except Exception:
+        pass
     threading.Thread(target=_live_heartbeat, name='live-progress', daemon=True).start()
     live_event(f'Kaggle notebook started for pipeline run {PIPELINE_RUN_ID}')
     live_flush()
@@ -353,10 +385,18 @@ if USE_COMET:
         _comet_workspaces = list(comet_ml.API(api_key=_comet_key).get_workspaces())
     except Exception as e:
         raise RuntimeError(f'Comet rejected COMET_API_KEY ({type(e).__name__}: {e}). Put a valid key in the secrets.') from e
-    COMET_WORKSPACE_RESOLVED = COMET_WORKSPACE_NAME or secret_or_none('COMET_WORKSPACE') or (_comet_workspaces[0] if _comet_workspaces else None)
-    if COMET_WORKSPACE_RESOLVED not in _comet_workspaces:
-        raise RuntimeError(f'Comet workspace {COMET_WORKSPACE_RESOLVED!r} does not belong to this API key. '
-                           f'Workspaces of this key: {_comet_workspaces}')
+    if not _comet_workspaces:
+        raise RuntimeError('This COMET_API_KEY has no Comet workspace. Create one on comet.com or use another key.')
+    # Use the first configured name that really belongs to the key. A wrong name (for example the PROJECT name put
+    # into COMET_WORKSPACE) must not cost a GPU run: fall back to the key's own workspace and say so in the dashboard.
+    _ws_wanted = [w for w in (COMET_WORKSPACE_NAME, secret_or_none('COMET_WORKSPACE')) if w]
+    COMET_WORKSPACE_RESOLVED = next((w for w in _ws_wanted if w in _comet_workspaces), None)
+    if COMET_WORKSPACE_RESOLVED is None:
+        COMET_WORKSPACE_RESOLVED = _comet_workspaces[0]
+        if _ws_wanted:
+            _hint = ' (that is the project name; the project is set by COMET_PROJECT)' if _ws_wanted[0] == COMET_PROJECT else ''
+            live_event(f'Comet workspace {_ws_wanted[0]!r} does not belong to this API key{_hint}; using '
+                       f'{COMET_WORKSPACE_RESOLVED!r} instead. Fix COMET_WORKSPACE in the server .env.', 'warning')
     live_event(f'Comet OK: workspace {COMET_WORKSPACE_RESOLVED}, project {COMET_PROJECT}')
     live_data(comet_workspace=COMET_WORKSPACE_RESOLVED, comet_project=COMET_PROJECT)
     print('Comet preflight OK | workspace:', COMET_WORKSPACE_RESOLVED, '| project:', COMET_PROJECT)
