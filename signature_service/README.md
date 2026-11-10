@@ -71,7 +71,8 @@ curl -F "reference=@a.png;type=image/png" -F "candidate=@b.png;type=image/png" "
 ```
 
 Status codes: `200` done, `202` still running (poll `poll_url`), `415` unsupported type,
-`413` too large, `422` not a valid image, `500` worker error.
+`413` too large, `422` not a valid image, `429` too many jobs from one IP (`RATE_LIMIT_PER_MINUTE`, default 30/min),
+`500` worker error. Responses (JSON and the web app) are gzip-compressed.
 
 ## Run locally (Docker)
 
@@ -107,9 +108,9 @@ be followed from HTTP → queue → worker → result. Without a token everythin
 ```bash
 pip install locust requests pillow
 # put ~20 real test-split images in loadtest/images/
-STEPS=1,5,10,20,40 STEP_SECONDS=60 locust -f loadtest/locustfile.py --host http://<server>:8000 \
-    --headless --csv loadtest/results/run1 --html loadtest/results/run1.html
-MODE=async locust -f loadtest/locustfile.py --host http://<server>:8000 --headless -u 20 -r 5 -t 3m
+ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> STEPS=1,5,10,20,40 STEP_SECONDS=60 locust -f loadtest/locustfile.py \
+    --host http://<server>:8000 --headless --csv loadtest/results/run1 --html loadtest/results/run1.html
+ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> MODE=async locust -f loadtest/locustfile.py --host http://<server>:8000 --headless -u 20 -r 5 -t 3m
 
 python scripts/measure_cold_start.py --url http://localhost:8000 --fresh   # includes S3 download
 python scripts/measure_cold_start.py --url http://localhost:8000           # warm restart

@@ -5,8 +5,9 @@ Examples (run from signature_service/):
   locust -f loadtest/locustfile.py --host http://<server>:8000
 
   # Headless step test: 1 -> 5 -> 10 -> 20 -> 40 concurrent users, CSV results for the report
-  STEPS=1,5,10,20,40 STEP_SECONDS=60 locust -f loadtest/locustfile.py --host http://<server>:8000 \
-      --headless --csv loadtest/results/run1 --html loadtest/results/run1.html
+  ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> STEPS=1,5,10,20,40 STEP_SECONDS=60 locust -f loadtest/locustfile.py \
+      --host http://<server>:8000 --headless --csv loadtest/results/run1 --html loadtest/results/run1.html
+  (without ADMIN_TOKEN the per-IP rate limit answers 429 once you exceed RATE_LIMIT_PER_MINUTE)
 
 Use real document images: put some test-split JPG/PNGs in loadtest/images/ (or set IMAGES_DIR).
 If the folder is empty, synthetic images are generated.
@@ -58,6 +59,13 @@ def _announce(environment, **_):
 
 class SignatureUser(HttpUser):
     wait_time = between(0.5, 1.5)
+
+    def on_start(self):
+        # The API limits detect/verify jobs per IP (RATE_LIMIT_PER_MINUTE). A stress test sends far more from one
+        # machine, so it identifies itself with the admin token: ADMIN_TOKEN=<PIPELINE_ADMIN_TOKEN> locust ...
+        token = os.getenv("ADMIN_TOKEN")
+        if token:
+            self.client.headers["X-Admin-Token"] = token
 
     @task(9)
     def detect(self):

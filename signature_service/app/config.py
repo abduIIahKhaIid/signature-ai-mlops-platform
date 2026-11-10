@@ -45,6 +45,9 @@ class Settings:
     uploads_s3_prefix: str = field(default_factory=lambda: os.getenv("UPLOADS_S3_PREFIX", "signatureai/uploads"))
     max_upload_bytes: int = field(default_factory=lambda: _int("MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
     max_image_pixels: int = field(default_factory=lambda: _int("MAX_IMAGE_PIXELS", 40_000_000))
+    # Abuse protection: new detect/verify jobs per client IP per minute (0 = off). Requests that carry the
+    # admin token (X-Admin-Token = PIPELINE_ADMIN_TOKEN) are not limited, e.g. your own Locust stress test.
+    rate_limit_per_minute: int = field(default_factory=lambda: _int("RATE_LIMIT_PER_MINUTE", 30))
 
     # Detection model registry (same layout the training notebook writes)
     model_source: str = field(default_factory=lambda: os.getenv("MODEL_SOURCE", "s3"))  # s3 | local

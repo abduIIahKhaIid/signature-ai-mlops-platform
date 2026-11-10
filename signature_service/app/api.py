@@ -7,13 +7,15 @@ import time
 from typing import Annotated
 
 from celery.result import AsyncResult
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from . import observability
 from .celery_app import DETECT_TASK, MODEL_INFO_TASK, VERIFY_TASK, celery_app
 from .config import settings
+from .ratelimit import limit_jobs
 from .storage import get_storage
 
 observability.setup("api")
@@ -23,6 +25,8 @@ app = FastAPI(
     description="Signature detection (RT-DETRv2) and signature similarity, served through a Redis/Celery queue.",
 )
 observability.instrument_fastapi(app)
+# compress JSON and the web app files (the JS bundle shrinks ~3x); images are uploaded, not sent back
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 API_STARTED = time.time()
 
 from . import web  # noqa: E402
@@ -89,7 +93,7 @@ def _check_simulation(simulate_failures: int) -> None:
         raise HTTPException(403, "failure simulation is disabled (ALLOW_FAILURE_SIMULATION=false)")
 
 
-@app.post("/v1/detect", summary="Detect signatures in one document image")
+@app.post("/v1/detect", summary="Detect signatures in one document image", dependencies=[Depends(limit_jobs)])
 async def detect(
     file: Annotated[UploadFile, File(description="Document image (JPEG/PNG/WEBP/BMP/TIFF)")],
     wait: Annotated[bool, Query(description="Wait for the result instead of only returning a job id")] = False,
@@ -104,7 +108,8 @@ async def detect(
     return await _respond(result, wait, timeout)
 
 
-@app.post("/v1/verify", summary="Similarity score between a reference and a candidate signature")
+@app.post("/v1/verify", summary="Similarity score between a reference and a candidate signature",
+          dependencies=[Depends(limit_jobs)])
 async def verify(
     reference: Annotated[UploadFile, File(description="Known genuine signature or document")],
     candidate: Annotated[UploadFile, File(description="Signature or document to check")],

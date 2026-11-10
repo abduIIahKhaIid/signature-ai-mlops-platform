@@ -43,4 +43,5 @@ os.environ.update({
     "LOGFIRE_TOKEN": "",
     "ALLOW_FAILURE_SIMULATION": "true",
     "MAX_RETRIES": "2",
+    "RATE_LIMIT_PER_MINUTE": "0",  # tests/test_ratelimit.py turns it on explicitly
 })

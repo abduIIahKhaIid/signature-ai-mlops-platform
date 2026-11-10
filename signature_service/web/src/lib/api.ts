@@ -75,6 +75,7 @@ export function explain(status: number, detail: string): string {
   if (status === 415) return "This file type is not supported. Upload a JPEG, PNG, WEBP, BMP or TIFF image.";
   if (status === 413) return "The file is too large for the server. Upload a smaller or compressed image.";
   if (status === 422) return "The server could not read this file as an image. Check that it opens on your computer, then upload it again.";
+  if (status === 429) return "Too many images were sent from your network in the last minute. Wait a minute, then try again.";
   if (status === 503) return "No model worker is online right now. Wait a minute for the workers to start, then try again.";
   if (status === 0) return "The server could not be reached. Check your connection and that the API is running.";
   return detail || `The server answered with HTTP ${status}.`;
