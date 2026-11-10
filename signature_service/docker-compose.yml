@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   # Optional HTTPS (needed only if Hugging Face refuses an http:// webhook URL). Needs ports 80 + 443 open.
-  #   PUBLIC_HOST=13-239-137-202.sslip.io in .env, then: docker compose --profile https up -d https
+  #   PUBLIC_HOST=13-236-244-226.sslip.io in .env, then: docker compose --profile https up -d https
   https:
     image: caddy:2-alpine
     profiles: ["https"]

@@ -49,7 +49,7 @@ os.environ.update({
     "AWS_ENDPOINT_URL_S3": f"http://127.0.0.1:{S3_PORT}", "AWS_ACCESS_KEY_ID": "mock", "AWS_SECRET_ACCESS_KEY": "mock",
     "AWS_DEFAULT_REGION": "us-east-1", "AWS_REGION": "us-east-1", "AWS_S3_BUCKET": BUCKET,
     "MODEL_S3_BUCKET": BUCKET, "MODEL_S3_PREFIX": PREFIX, "MODEL_ALIAS": "latest", "HF_WEBHOOK_SECRET": SECRET,
-    "HF_DATASET_REPO": "mabdullahkhalid/Signature_Dataset_Detection", "RETRAIN_BACKEND": "ec2",
+    "HF_DATASET_REPO": "mabdullahkhalid/Signature_Dataset_Detection",
     "PIPELINE_DEBOUNCE_SECONDS": "2", "PIPELINE_ADMIN_TOKEN": "admin", "KAGGLE_USERNAME": "mabdullahkhalid",
     "PIPELINE_DIR": str(REPO / "pipeline"), "PIPELINE_WORK_DIR": str(WORK / "runs"), "RETRAIN_MODE": "smoke",
     "PIPELINE_TICK_SECONDS": "3", "PIPELINE_POLL_MINUTES": "0", "MODEL_POLL_SECONDS": "15",

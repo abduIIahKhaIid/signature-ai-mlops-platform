@@ -1,5 +1,5 @@
-"""Kaggle side of the retraining pipeline. Used by the EC2 orchestrator (signature_service/app/retrain.py)
-and by the manual GitHub workflow .github/workflows/retrain.yml.
+"""Kaggle side of the retraining pipeline. Used by the EC2 orchestrator (signature_service/app/retrain.py).
+The commands below can also be run by hand on EC2 for debugging.
 
   python pipeline/kaggle_job.py secrets  --dataset <owner>/signatureai-pipeline-secrets
   python pipeline/kaggle_job.py build    --kernel <owner>/signatureai-retrain --mode smoke --hf-revision <sha> \

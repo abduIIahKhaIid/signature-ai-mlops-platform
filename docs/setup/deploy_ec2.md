@@ -10,7 +10,7 @@ or make the repo public for the demo.
 
 ## 1. IAM role for the instance (no keys on the server)
 IAM → Roles → Create role → **AWS service: EC2** → next → Create policy → JSON → paste
-`deploy/iam-ec2-role-policy.json` → name `SignatureAI-EC2-ReadModels` → attach → role name `SignatureAI-EC2-Role`.
+`signature_service/deploy/iam-ec2-role-policy.json` → name `SignatureAI-EC2-ReadModels` → attach → role name `SignatureAI-EC2-Role`.
 
 ## 2. Launch the instance
 EC2 → Launch instance:
@@ -22,7 +22,7 @@ EC2 → Launch instance:
 * Advanced details:
   * IAM instance profile: **SignatureAI-EC2-Role**
   * **Metadata response hop limit: 2**  ← required, otherwise boto3 *inside Docker* cannot get the role credentials
-  * User data: paste `deploy/ec2_user_data.sh` (after editing `REPO_URL`)
+  * User data: paste `signature_service/deploy/ec2_user_data.sh` (after editing `REPO_URL`)
 
 ## 3. Watch it come up (≈ 10–15 min first time)
 ```bash
@@ -46,6 +46,8 @@ docker compose ps
 docker compose logs -f api worker
 docker compose up -d --scale worker=2      # more workers
 docker compose exec redis redis-cli LLEN inference   # queue length
-git pull && docker compose up -d --build   # deploy new code
+# New code is deployed AUTOMATICALLY on every push to main (docs/setup/cicd_github_secrets.md).
+# Do not edit tracked files on the server: each deploy runs `git reset --hard <commit>`.
 ```
-Stop the instance when you are done to avoid charges.
+Stop the instance when you are done to avoid charges. Attach an **Elastic IP** first: without it the public IP
+changes on every stop/start and `API_URL`, the Hugging Face webhook URL and the dashboard link all break.

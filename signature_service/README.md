@@ -1,8 +1,8 @@
 # SignatureAI inference service
 
 FastAPI + Redis + Celery service that serves the RT-DETRv2 signature detector trained in
-`SignatureAI_Colab_T4_HuggingFace_EarlyStopping_S3_Comet.ipynb`, plus a signature similarity
-endpoint. No Ultralytics code: RT-DETRv2 via Hugging Face `transformers` (Apache-2.0),
+`notebooks/01_detection_training_colab.ipynb` (and retrained by `pipeline/`), plus a signature similarity
+endpoint (Siamese ResNet18 from `notebooks/02_similarity_siamese_kaggle.ipynb`). No Ultralytics code: RT-DETRv2 via Hugging Face `transformers` (Apache-2.0),
 ResNet18 via `torchvision` (BSD-3).
 
 ```
@@ -39,7 +39,9 @@ client ──HTTP──▶ FastAPI (api) ──job id──▶ Redis (broker) �
 | GET | `/v1/model` | model version served, cold-start time, hot-reload status |
 | GET | `/health` | liveness of the API |
 | GET | `/ready` | Redis reachable **and** ≥1 worker online |
-| POST | `/webhooks/huggingface` | HF dataset update → GitHub Actions retraining (see `pipeline/README_PIPELINE.md`) |
+| POST | `/webhooks/huggingface` | HF dataset update → retraining on EC2 + Kaggle (see `docs/setup/retraining_pipeline.md`) |
+| GET | `/pipeline` | live retraining dashboard (`/v1/pipeline/state` = its JSON) |
+| POST | `/v1/pipeline/check` | check the HF repo now, `?force=true` = retrain anyway (header `X-Admin-Token`) |
 
 Interactive docs: `http://<host>:8000/docs`.
 
@@ -64,19 +66,15 @@ docker compose up -d --scale worker=3   # more capacity
 `MODEL_ALIAS=production` only works after the notebook's manual promotion cell has written
 `aliases/production.json`; until then use `MODEL_ALIAS=latest` or pin `MODEL_VERSION=v…`.
 
-## Deploy on AWS EC2 (single host)
+## Deploy on AWS EC2
 
-1. IAM role for the instance with `s3:GetObject` on `arn:aws:s3:::<bucket>/signatureai/detection/*`
-   (leave `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` empty in `.env`: boto3 uses the role).
-2. Launch Ubuntu, e.g. `t3.large` (2 vCPU / 8 GB), attach the role, security group: 22 from your IP,
-   8000 (or 80/443 behind nginx / an ALB).
-3. Install Docker + compose plugin, clone the repo, `cp .env.example .env`, set `AWS_DEFAULT_REGION`
-   to the bucket's region, `docker compose up -d --build`.
-4. Set `WORKER_CONCURRENCY` ≈ number of vCPUs and `TORCH_THREADS=1` for throughput, or
-   concurrency 1 and `TORCH_THREADS`=vCPUs for lowest single-request latency. Measure both.
-
-Multi-host (ECS / several EC2 workers): set `STORAGE_BACKEND=s3` so API and workers share uploads,
-and point all of them at a managed Redis (ElastiCache).
+* Create the server once: [`docs/setup/deploy_ec2.md`](../docs/setup/deploy_ec2.md).
+* After that, every push to `main` is deployed automatically by GitHub Actions through AWS SSM:
+  [`docs/setup/cicd_github_secrets.md`](../docs/setup/cicd_github_secrets.md). Do not edit code on the server.
+* Tuning: `WORKER_CONCURRENCY` ≈ number of vCPUs and `TORCH_THREADS=1` for throughput, or concurrency 1 and
+  `TORCH_THREADS`=vCPUs for the lowest single-request latency. Measure both.
+* Multi-host (ECS / several EC2 workers): set `STORAGE_BACKEND=s3` so API and workers share uploads,
+  and point all of them at a managed Redis (ElastiCache).
 
 ## Observability (Logfire)
 
@@ -115,8 +113,8 @@ validation, upload clean-up, similarity, `/v1/model`, and **hot reload when the 
 
 ## Known limitations
 
-* `/v1/verify` is a **baseline**: ImageNet ResNet18 embeddings + cosine similarity. It is not calibrated
-  for forgery detection; tune `SIMILARITY_MATCH_THRESHOLD` on labelled genuine/forged pairs, then plug
-  in fine-tuned Siamese weights with `SIMILARITY_WEIGHTS_PATH`.
+* `/v1/verify` uses the Siamese ResNet18 trained on CEDAR (clean scans). Signatures cropped from real documents are a
+  different domain, so expect lower accuracy until it is trained on in-domain pairs
+  ([`docs/results/phase7_similarity_results.md`](../docs/results/phase7_similarity_results.md)).
 * CPU inference. Export to ONNX / quantise if latency targets are not met.
 * `STORAGE_BACKEND=local` assumes API and workers share one host.

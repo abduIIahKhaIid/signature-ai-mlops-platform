@@ -71,14 +71,10 @@ class Settings:
     # Which Celery worker this process is: "inference" loads the models, "pipeline" (retraining orchestrator) does not.
     worker_role: str = field(default_factory=lambda: os.getenv("WORKER_ROLE", "inference"))
 
-    # Retraining pipeline trigger: HF webhook -> EC2 orchestrator ("ec2", default) or GitHub Actions ("github")
-    retrain_backend: str = field(default_factory=lambda: os.getenv("RETRAIN_BACKEND", "ec2"))
+    # Retraining pipeline trigger: HF webhook -> EC2 orchestrator (pipeline worker) -> Kaggle GPU. No GitHub Actions.
     hf_webhook_secret: str | None = field(default_factory=lambda: os.getenv("HF_WEBHOOK_SECRET") or None)
     hf_dataset_repo: str | None = field(default_factory=lambda: os.getenv("HF_DATASET_REPO") or None)
-    github_repo: str | None = field(default_factory=lambda: os.getenv("GITHUB_REPO") or None)  # owner/name
-    github_token: str | None = field(default_factory=lambda: os.getenv("GITHUB_TOKEN") or None)
     retrain_mode: str = field(default_factory=lambda: os.getenv("RETRAIN_MODE", "full"))
-    retrain_cooldown_seconds: int = field(default_factory=lambda: _int("RETRAIN_COOLDOWN_SECONDS", 1800))
 
     # EC2 retraining orchestrator (pipeline worker): HF dataset check -> dedup -> Kaggle GPU -> monitor -> hot reload
     pipeline_queue: str = field(default_factory=lambda: os.getenv("PIPELINE_QUEUE", "pipeline"))

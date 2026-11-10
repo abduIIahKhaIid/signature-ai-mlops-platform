@@ -382,7 +382,7 @@ class Orchestrator:
         ready, text = self.kaggle.secrets_ready()
         if not ready:
             return self.store.decide("blocked", f"Kaggle secrets dataset {self.kaggle.secrets_dataset} is not ready "
-                                                f"({text}). See pipeline/README_PIPELINE.md, step 'Kaggle secrets'.", **base)
+                                                f"({text}). See docs/setup/retraining_pipeline.md, step 'Kaggle secrets'.", **base)
 
         dataset = {"repo": repo, "commit": repo_state["commit"], "url": repo_state["url"], "zip": newest["path"],
                    "size_bytes": newest["size"], "sha256": newest["sha256"], "fingerprint": fp,
@@ -636,7 +636,7 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
     return {
         "server_time": utcnow(),
         "phases": [{"key": k, "label": label, "where": where} for k, label, where in PHASES],
-        "orchestrator": {"backend": cfg.retrain_backend, "online": bool(hb and time.time() - hb < 4 * cfg.pipeline_tick_seconds + 30),
+        "orchestrator": {"backend": "ec2", "online": bool(hb and time.time() - hb < 4 * cfg.pipeline_tick_seconds + 30),
                          "last_heartbeat": dt.datetime.fromtimestamp(hb, dt.timezone.utc).isoformat() if hb else None},
         "config": {"hf_repo": cfg.hf_dataset_repo,
                    "hf_url": f"https://huggingface.co/datasets/{cfg.hf_dataset_repo}" if cfg.hf_dataset_repo else None,

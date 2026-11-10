@@ -170,14 +170,26 @@ jobs:
         id: ready
         if: steps.changes.outputs.deploy == 'true'
         env:
-          K: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          DEPLOY_AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          DEPLOY_AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          if [ -z "$K" ] || [ -z "$INSTANCE_ID" ] || [ -z "$AWS_REGION" ]; then
+          # A push that changed the service MUST reach EC2: missing secrets fail the job (red), never a silent skip.
+          MISSING=""
+          for name in DEPLOY_AWS_ACCESS_KEY_ID DEPLOY_AWS_SECRET_ACCESS_KEY EC2_INSTANCE_ID AWS_REGION; do
+            [ -n "${!name}" ] || MISSING="$MISSING $name"
+          done
+          if [ -n "$MISSING" ]; then
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::CD not configured (DEPLOY_AWS_ACCESS_KEY_ID / DEPLOY_AWS_SECRET_ACCESS_KEY / EC2_INSTANCE_ID / AWS_REGION). See signature_service/deploy/CI_CD.md"
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Deploy is not configured. Missing repository secrets:$MISSING. Add them in GitHub -> Settings -> Secrets and variables -> Actions (see docs/setup/cicd_github_secrets.md)."
+            echo "### ❌ Not deployed: missing secrets:$MISSING" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
+          if [ -z "$API_URL" ]; then
+            echo "::warning::Variable API_URL is not set: the deploy runs, but the check from outside is skipped."
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: AWS credentials (deploy-only IAM user)
         if: steps.ready.outputs.ok == 'true'

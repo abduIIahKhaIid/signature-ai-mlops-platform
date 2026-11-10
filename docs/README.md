@@ -1,0 +1,18 @@
+# Documentation
+
+## setup/ — how to set things up
+| File | What |
+|---|---|
+| [`cicd_github_secrets.md`](setup/cicd_github_secrets.md) | Every push to `main` deploys to EC2: GitHub secrets, SSM, IAM, troubleshooting |
+| [`deploy_ec2.md`](setup/deploy_ec2.md) | Create the EC2 server from zero (IAM role, instance, user data) |
+| [`retraining_pipeline.md`](setup/retraining_pipeline.md) | Continuous training: HF webhook → EC2 pipeline worker → Kaggle GPU → gate → S3 → hot reload |
+
+## results/ — measured results
+| File | What |
+|---|---|
+| [`phase5_6_ec2_queue_results.md`](results/phase5_6_ec2_queue_results.md) | EC2 deployment checks, queue behaviour, retries, cold start |
+| [`phase7_similarity_results.md`](results/phase7_similarity_results.md) | SSIM vs ResNet18 vs Siamese ResNet18 (CEDAR, writer-disjoint) |
+| [`phase10_mock_pipeline_test.md`](results/phase10_mock_pipeline_test.md) | Retraining notebook mock test (all cells, dirty-data checks, gate) |
+
+## images/
+Screenshots of the retraining dashboard (`/pipeline`).

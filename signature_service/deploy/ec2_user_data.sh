@@ -5,9 +5,9 @@
 set -euxo pipefail
 
 # ---------- EDIT THESE 3 LINES ----------
-REPO_URL="https://github.com/abduIIahKhaIid/signature-ai-mlops-platform"   # public repo, or see DEPLOY_EC2.md for private
+REPO_URL="https://github.com/abduIIahKhaIid/signature-ai-mlops-platform"   # public repo, or see docs/setup/deploy_ec2.md for private
 SERVICE_DIR="signature_service"                               # folder inside the repo
-LOGFIRE_TOKEN="pylf_v1_us_bybRhj2ZjPNH7Fjm7vDtKWYfxV8gCTxBnLjXzF4nMHD1"                                              # optional
+LOGFIRE_TOKEN=""   # optional; NEVER commit a real token: set it in ~/app/signature_service/.env on the server
 # ----------------------------------------
 
 export DEBIAN_FRONTEND=noninteractive
