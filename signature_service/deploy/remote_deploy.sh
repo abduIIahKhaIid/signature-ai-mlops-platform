@@ -1,7 +1,8 @@
 #!/bin/bash
 # Runs ON the EC2 instance (called by GitHub Actions through AWS SSM Run Command, or by hand).
 # Usage: remote_deploy.sh <git-sha>
-# The repo has already been reset to <git-sha> by the caller. .env (secrets) is untracked and is kept.
+# The repo has already been reset to <git-sha> by the caller. Before stopping any
+# containers, the production .env is refreshed from AWS Secrets Manager.
 #
 # Memory-friendly order for a small instance:
 #   1. stop and remove the running containers (volumes kept: Redis queue/pipeline state, model cache)
@@ -15,6 +16,11 @@ SERVICE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SERVICE_DIR"
 echo "== deploying ${SHA} in ${SERVICE_DIR}"
 free -m | sed -n '1,2p'
+
+# Fetch and validate the new environment before stopping the working deployment.
+# If AWS/IAM/secret validation fails, set -e exits here and existing containers stay up.
+echo "== preflight: synchronizing production environment"
+bash "${SERVICE_DIR}/deploy/sync_secrets.sh"
 
 # Version shown by GET /health, so the pipeline can prove which commit is live
 if grep -q '^APP_VERSION=' .env; then

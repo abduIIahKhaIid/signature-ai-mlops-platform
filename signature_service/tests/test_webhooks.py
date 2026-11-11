@@ -33,9 +33,11 @@ def post(client, body, secret=SECRET):
     return client.post("/webhooks/huggingface", json=body, headers={"X-Webhook-Secret": secret})
 
 
-def test_not_configured_returns_503(monkeypatch):
+def test_without_a_server_secret_unsigned_webhooks_are_accepted(ec2, monkeypatch):
+    client, sent, _ = ec2
     monkeypatch.setattr(webhooks, "settings", dataclasses.replace(webhooks.settings, hf_webhook_secret=None))
-    assert post(TestClient(app), payload()).status_code == 503
+    r = client.post("/webhooks/huggingface", json=payload("sha-x"))  # no X-Webhook-Secret header at all
+    assert r.status_code == 202 and r.json()["accepted"] is True and len(sent) == 1
 
 
 def test_wrong_secret_rejected(ec2):

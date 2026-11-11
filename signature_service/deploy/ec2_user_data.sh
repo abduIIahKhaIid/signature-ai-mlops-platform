@@ -1,18 +1,36 @@
 #!/bin/bash
 # EC2 "User data" script (Ubuntu 24.04). Paste into: Launch instance -> Advanced details -> User data.
-# It installs Docker, clones the repo, writes .env and starts FastAPI + Redis + Celery.
+# It installs Docker + AWS CLI, clones the repo, securely fetches .env from
+# AWS Secrets Manager, and starts FastAPI + Redis + Celery.
 # Progress log on the instance:  sudo tail -f /var/log/cloud-init-output.log
-set -euxo pipefail
+set -euo pipefail
 
-# ---------- EDIT THESE 3 LINES ----------
+# ---------- EDIT THESE 2 LINES ----------
 REPO_URL="https://github.com/abduIIahKhaIid/signature-ai-mlops-platform"   # public repo, or see docs/setup/deploy_ec2.md for private
 SERVICE_DIR="signature_service"                               # folder inside the repo
-LOGFIRE_TOKEN=""   # optional; NEVER commit a real token: set it in ~/app/signature_service/.env on the server
 # ----------------------------------------
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y ca-certificates curl git
+apt-get install -y ca-certificates curl git unzip
+
+# AWS CLI v2 is required by deploy/sync_secrets.sh. Install the official AWS
+# package for this instance architecture; authentication comes from the EC2 role.
+if ! command -v aws >/dev/null 2>&1; then
+  case "$(dpkg --print-architecture)" in
+    amd64) AWSCLI_ARCH="x86_64" ;;
+    arm64) AWSCLI_ARCH="aarch64" ;;
+    *) echo "unsupported architecture for AWS CLI: $(dpkg --print-architecture)" >&2; exit 1 ;;
+  esac
+  AWSCLI_TMP="$(mktemp -d)"
+  trap 'rm -rf -- "${AWSCLI_TMP}"' EXIT
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWSCLI_ARCH}.zip" -o "${AWSCLI_TMP}/awscliv2.zip"
+  unzip -q "${AWSCLI_TMP}/awscliv2.zip" -d "${AWSCLI_TMP}"
+  "${AWSCLI_TMP}/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
+  rm -rf -- "${AWSCLI_TMP}"
+  trap - EXIT
+fi
+aws --version
 
 # Docker Engine + compose plugin (official repository)
 install -m 0755 -d /etc/apt/keyrings
@@ -35,20 +53,10 @@ fi
 cd /home/ubuntu
 [ -d app ] || git clone "$REPO_URL" app
 cd "app/$SERVICE_DIR"
-
-# .env: no AWS keys here, the instance IAM role gives S3 read access
-cp .env.example .env
-sed -i "s|^MODEL_ALIAS=.*|MODEL_ALIAS=latest|" .env
-sed -i "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=|" .env
-sed -i "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=|" .env
-sed -i "s|^AWS_DEFAULT_REGION=.*|AWS_DEFAULT_REGION=ap-southeast-2|" .env
-sed -i "s|^ENVIRONMENT=.*|ENVIRONMENT=ec2|" .env
-sed -i "s|^LOGFIRE_TOKEN=.*|LOGFIRE_TOKEN=${LOGFIRE_TOKEN}|" .env
-# Use all vCPUs: one Celery process per vCPU, one torch thread each
-VCPUS=$(nproc)
-sed -i "s|^WORKER_CONCURRENCY=.*|WORKER_CONCURRENCY=${VCPUS}|" .env
-sed -i "s|^TORCH_THREADS=.*|TORCH_THREADS=1|" .env
+SHA="$(git rev-parse HEAD)"
 chown -R ubuntu:ubuntu /home/ubuntu/app
 
-docker compose up -d --build
-echo "SIGNATURE SERVICE STARTED"
+# Use the same fail-closed path as CI/CD. It fetches and validates Secrets
+# Manager before stopping anything, writes APP_VERSION, builds, starts and waits.
+bash deploy/remote_deploy.sh "${SHA}"
+echo "SIGNATURE SERVICE STARTED AT ${SHA}"

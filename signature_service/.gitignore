@@ -1,4 +1,7 @@
 .env
+.env.secrets.*
+.env.backup.*
+.sync-secrets.lock
 __pycache__/
 *.pyc
 .pytest_cache/

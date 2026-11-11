@@ -44,10 +44,14 @@ def _enqueue_check(hf_sha: str | None) -> bool:
 
 @router.post("/huggingface", status_code=202, summary="Hugging Face dataset update -> retraining (EC2 + Kaggle)")
 async def huggingface_webhook(request: Request, x_webhook_secret: str | None = Header(default=None)):
-    if not settings.hf_webhook_secret:
-        raise HTTPException(503, "retraining webhook is not configured on this server (HF_WEBHOOK_SECRET)")
-    if not x_webhook_secret or not hmac.compare_digest(x_webhook_secret, settings.hf_webhook_secret):
-        raise HTTPException(401, "invalid webhook secret")
+    # HF_WEBHOOK_SECRET set: the request must carry the same value (Hugging Face sends it as X-Webhook-Secret).
+    # HF_WEBHOOK_SECRET empty: unsigned webhooks are accepted. That is acceptable because a webhook only triggers a
+    # *check*: the server reads its own configured HF repo, trains only a never-trained ZIP, and debounces bursts.
+    if settings.hf_webhook_secret:
+        if not x_webhook_secret or not hmac.compare_digest(x_webhook_secret, settings.hf_webhook_secret):
+            raise HTTPException(401, "invalid webhook secret")
+    else:
+        log.info("HF webhook without secret accepted (HF_WEBHOOK_SECRET is empty)")
 
     payload = await request.json()
     event = payload.get("event") or {}

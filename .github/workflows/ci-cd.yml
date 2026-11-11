@@ -88,6 +88,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --quiet pyflakes pyyaml
+      - name: Deployment shell scripts have valid syntax
+        run: |
+          bash -n signature_service/deploy/sync_secrets.sh
+          bash -n signature_service/deploy/remote_deploy.sh
+          bash -n signature_service/deploy/ec2_user_data.sh
       - name: train_pipeline.ipynb is up to date with the training notebook
         run: |
           python pipeline/make_pipeline_notebook.py notebooks/01_detection_training_colab.ipynb /tmp/train_pipeline.ipynb
