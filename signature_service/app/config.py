@@ -118,6 +118,9 @@ class Settings:
     notebook_aws_region: str | None = field(default_factory=lambda: os.getenv("NOTEBOOK_AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None)
 
     # Alerts (dashboard toggles decide which ones are sent)
+    # Public address of this server, used for links in alerts. PUBLIC_URL, else https://<PUBLIC_HOST> (Caddy), else none.
+    public_url: str | None = field(default_factory=lambda: os.getenv("PUBLIC_URL") or (
+        f"https://{os.getenv('PUBLIC_HOST')}" if os.getenv("PUBLIC_HOST") else None))
     alert_webhook_url: str | None = field(default_factory=lambda: os.getenv("ALERT_WEBHOOK_URL") or None)  # Slack/Discord
     smtp_host: str | None = field(default_factory=lambda: os.getenv("SMTP_HOST") or None)
     smtp_port: int = field(default_factory=lambda: _int("SMTP_PORT", 587))

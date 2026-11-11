@@ -406,7 +406,7 @@ def test_dashboard_has_eta_lineage_and_actions(env):
     assert state["eta"]["remaining_seconds"] > 0 and state["eta"]["basis"] == "defaults"
     assert state["lineage"]["current"]["run_id"] == run_id and state["lineage"]["serving"] == "v-old"
     assert state["rollback_to"] == "v-older"
-    assert set(state["alerts"]["prefs"]) == {"email", "slack", "stuck"}
+    assert set(state["alerts"]["prefs"]) == {"email", "slack", "stuck", "trigger"}
     json.dumps(state, allow_nan=False)
 
 
@@ -441,3 +441,102 @@ def test_project_name_in_comet_workspace_is_ignored_not_fatal(env):
     run = env.store.get_run(run_id)
     assert any(e["level"] == "warning" and "project name" in e["message"] for e in run["events"])
     assert "COMET_WORKSPACE_NAME = None" in env.kaggle.pushes[0]
+
+
+# ---------------------------------------------------------------------------------------------- trigger alerts
+class RecordingNotifier:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, kind, subject, text):
+        self.sent.append((kind, subject, text))
+        return ["slack"]
+
+
+def test_every_upload_tells_the_user_what_happened(env):
+    """HF webhook -> one message per decision, without opening the server or the dashboard."""
+    env.orch.notifier = n = RecordingNotifier()
+    env.orch.cfg = dataclasses.replace(env.cfg, public_url="https://sig.example")
+
+    env.orch.request_check("webhook", hf_sha="c0")                       # repo still empty
+    assert n.sent[-1][1] == "No dataset ZIP in the Hugging Face repo"
+
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/pipeline_runs/datasets/{SHA_B}.json",
+                      Body=json.dumps({"version": "v-b", "status": "deployed", "trained_at_utc": "2026-11-10T05:47:41"}))
+    env.hf.upload("same_content_new_name.zip", SHA_B, "commit-b")       # the same bytes as an earlier upload
+    env.orch.request_check("webhook", hf_sha="commit-b")
+    kind, subject, text = n.sent[-1]
+    assert kind == "trigger" and subject == "Dataset already trained, no training started: same_content_new_name.zip"
+    assert "model v-b" in text and "Retrain anyway" in text and "Hugging Face webhook" in text
+    assert "https://sig.example/pipeline" in text and env.kaggle.pushes == []
+
+    env.hf.upload("new_data.zip", SHA_A, "commit-a")
+    run_id = env.orch.request_check("webhook", hf_sha="commit-a")["run_id"]
+    assert n.sent[-1][1] == "Training started: new_data.zip" and run_id in n.sent[-1][2]
+
+    env.orch.request_check("webhook", hf_sha="commit-a2")               # second upload while Kaggle trains
+    assert n.sent[-1][1] == "Training is busy, the dataset will be checked afterwards"
+    assert len(n.sent) == 4
+
+
+def test_scheduled_checks_stay_quiet_unless_they_start_or_break_something(env):
+    env.orch.notifier = n = RecordingNotifier()
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/pipeline_runs/datasets/{SHA_B}.json", Body=json.dumps({"version": "v-b"}))
+    env.hf.upload("b.zip", SHA_B, "commit-b")
+    env.orch.request_check("schedule")                                    # every 30 min: no message for "nothing new"
+    assert n.sent == []
+
+    env.kaggle.missing = ["KAGGLE_KEY is not set"]
+    env.hf.upload("a.zip", SHA_A, "commit-a")
+    env.orch.request_check("schedule")
+    env.orch.request_check("schedule")                                    # same problem again: no second message
+    assert [s[1] for s in n.sent] == ["Retraining is blocked: a.zip"]
+    env.orch.request_check("webhook")                                     # a person uploaded: always answered
+    assert len(n.sent) == 2
+
+    env.kaggle.missing = []
+    env.orch.request_check("schedule")                                    # the poll found new data and started
+    assert n.sent[-1][1] == "Training started: a.zip"
+
+
+def test_trigger_alerts_have_their_own_toggle_and_never_break_the_check(env):
+    posts = []
+    cfg = dataclasses.replace(env.cfg, alert_webhook_url="https://hooks.example/x")
+    notifier = Notifier(cfg, env.store, http_post=lambda url, body: posts.append(body["content"]))
+    R.set_alerts(env.store, {"slack": False}, "dashboard")                # run-result messages off ...
+    assert notifier.send("trigger", "Training started", "x") == ["slack"]  # ... upload answers still on
+    R.set_alerts(env.store, {"trigger": False}, "dashboard")
+    assert notifier.send("trigger", "Training started", "x") == []
+
+    class Broken:
+        def send(self, *a):
+            raise RuntimeError("SMTP down")
+    env.orch.notifier = Broken()
+    env.hf.upload("a.zip", SHA_A, "commit-a")
+    assert env.orch.request_check("webhook")["decision"] == "started"     # the alert failed, the run did not
+
+
+def test_trigger_history_keeps_what_each_upload_led_to(env):
+    env.orch.notifier = RecordingNotifier()
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/pipeline_runs/datasets/{SHA_B}.json",
+                      Body=json.dumps({"version": "v-b", "status": "deployed"}))
+    env.hf.upload("b.zip", SHA_B, "commit-b")
+    env.orch.request_check("webhook", hf_sha="commit-b")                  # same dataset -> skipped
+    env.orch.request_check("schedule")                                    # poll, nothing new -> not in the history
+    env.hf.upload("a.zip", SHA_A, "commit-a")
+    run_id = env.orch.request_check("manual")["run_id"]                   # dashboard "Check now" -> started
+
+    history = dashboard_state(env.store, env.cfg)["triggers"]
+    assert [(t["source"], t["decision"]) for t in history] == [("manual", "started"), ("webhook", "skipped_trained")]
+    started, skipped = history
+    assert started["run_id"] == run_id and started["zip"] == "a.zip" and started["alerts"] == ["slack"]
+    assert skipped["trained_version"] == "v-b" and skipped["fingerprint"] == SHA_B and skipped["hf_sha"] == "commit-b"
+    assert skipped["title"] == "Dataset already trained, no training started"
+    json.dumps(history, allow_nan=False)
+
+
+def test_trigger_history_is_rebuilt_from_the_decision_log_before_the_first_record(env):
+    env.store.decide("skipped_trained", "same content", source="webhook", zip="old.zip", fingerprint=SHA_B)
+    env.store.decide("skipped_trained", "poll", source="schedule", zip="old.zip")
+    history = R.trigger_history(env.store)
+    assert len(history) == 1 and history[0]["zip"] == "old.zip" and history[0]["alerts"] == []

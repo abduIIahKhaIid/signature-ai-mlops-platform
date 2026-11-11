@@ -15,6 +15,7 @@ The dataset itself only ever travels Hugging Face -> Kaggle.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 import math
@@ -141,6 +142,18 @@ class PipelineStore:
 
     def decisions(self, limit: int = 30) -> list[dict]:
         return [json.loads(x) for x in self.r.lrange("pipeline:decisions", 0, limit - 1)]
+
+    # trigger history: one record per check a person caused (HF webhook, dashboard button, re-check after a run),
+    # plus scheduled checks that started a run or hit a problem. The raw decision log above also holds every
+    # 30-minute poll and keeps only 100 entries (~2 days); this list keeps the last TRIGGER_HISTORY uploads.
+    TRIGGER_HISTORY = 500
+
+    def add_trigger(self, record: dict) -> None:
+        self.r.lpush("pipeline:triggers", json.dumps(json_safe(record), default=str))
+        self.r.ltrim("pipeline:triggers", 0, self.TRIGGER_HISTORY - 1)
+
+    def triggers(self, limit: int = 50) -> list[dict]:
+        return [json.loads(x) for x in self.r.lrange("pipeline:triggers", 0, max(1, limit) - 1)]
 
     # misc
     def get_json(self, key: str):
@@ -352,6 +365,72 @@ class KaggleCLI:
 
 
 # ===================================================================== orchestrator
+# ===================================================================== trigger alert texts
+TRIGGER_TITLES = {
+    "started": "Training started",
+    "skipped_trained": "Dataset already trained, no training started",
+    "skipped_failed": "Dataset failed before, not retried automatically",
+    "no_dataset": "No dataset ZIP in the Hugging Face repo",
+    "deferred": "Training is busy, the dataset will be checked afterwards",
+    "blocked": "Retraining is blocked",
+    "error": "Dataset check failed",
+}
+TRIGGER_SOURCES = {"webhook": "Hugging Face webhook", "manual": "dashboard button", "schedule": "scheduled check",
+                   "pending": "re-check after the previous run"}
+TRIGGER_NEXT = {
+    "started": "Kaggle is training now. You get another message when the run ends (deployed, rejected, failed or stopped).",
+    "skipped_trained": "No GPU time was used. To train on new data, upload a ZIP with different content (the file name "
+                       "does not matter, the SHA-256 of the content does). To train on this one again anyway: "
+                       "dashboard -> Retrain anyway.",
+    "skipped_failed": "Fix the cause shown in the dashboard, then press Retrain anyway.",
+    "no_dataset": "Upload a reviewed dataset ZIP to the Hugging Face repo.",
+    "deferred": "Nothing to do: the check runs by itself when the current run ends.",
+    "blocked": "Nothing was started. Fix the setting above (server .env / Secrets Manager), then press Check now.",
+    "error": "Nothing was started. It is retried by the next webhook, the next scheduled check, or Check now.",
+}
+
+
+def trigger_text(entry: dict, cfg) -> str:
+    when = entry.get("ts") or utcnow()
+    lines = [f"What happened: {entry.get('message')}", "",
+             f"Trigger: {TRIGGER_SOURCES.get(entry.get('source'), entry.get('source'))} at {when}"]
+    if entry.get("hf_sha"):
+        lines.append(f"Hugging Face commit: {str(entry['hf_sha'])[:12]}")
+    if entry.get("zip"):
+        lines.append(f"Dataset ZIP: {entry['zip']}")
+    if entry.get("fingerprint"):
+        lines.append(f"Content SHA-256: {str(entry['fingerprint'])[:16]}...")
+    marker = entry.get("marker") or {}
+    if marker:
+        lines.append(f"Trained before: model {marker.get('version')} on {str(marker.get('trained_at_utc', '?'))[:16]} "
+                     f"(gate: {marker.get('status')})")
+    if entry.get("run_id"):
+        lines.append(f"Run: {entry['run_id']}")
+    lines += ["", TRIGGER_NEXT.get(entry.get("decision"), "")]
+    if cfg.public_url:
+        lines.append(f"Dashboard: {cfg.public_url.rstrip('/')}/pipeline")
+    return "\n".join(line for line in lines if line is not None)
+
+
+def trigger_record(entry: dict, alerts: list[str] | None) -> dict:
+    """One row of the dashboard's trigger history."""
+    marker = entry.get("marker") or {}
+    return {"ts": entry.get("ts") or utcnow(), "source": entry.get("source"), "decision": entry.get("decision"),
+            "title": TRIGGER_TITLES.get(entry.get("decision"), entry.get("decision")), "message": entry.get("message"),
+            "hf_sha": entry.get("hf_sha"), "zip": entry.get("zip"), "fingerprint": entry.get("fingerprint"),
+            "run_id": entry.get("run_id"), "trained_version": marker.get("version"), "trained_status": marker.get("status"),
+            "alerts": list(alerts or [])}
+
+
+def trigger_history(store: PipelineStore, limit: int = 50) -> list[dict]:
+    """Trigger history, newest first. Before the first recorded trigger it is rebuilt from the decision log."""
+    saved = store.triggers(limit)
+    if saved:
+        return saved
+    return [trigger_record(d, None) for d in store.decisions(100)
+            if d.get("decision") in TRIGGER_TITLES and d.get("source") != "schedule"][:limit]
+
+
 class Orchestrator:
     def __init__(self, settings, store: PipelineStore, s3, hf: HfInspector, kaggle: KaggleCLI,
                  probe: Callable[[], dict | None], clock: Callable[[], float] = time.time, comet=None, notifier=None):
@@ -392,21 +471,21 @@ class Orchestrator:
     def request_check(self, source: str, hf_sha: str | None = None, force: bool = False, note: str | None = None) -> dict:
         repo = self.cfg.hf_dataset_repo
         if not repo:
-            return self.store.decide("blocked", "HF_DATASET_REPO is not set on the server", source=source)
+            return self._decide("blocked", "HF_DATASET_REPO is not set on the server", source=source)
         active = self.store.active()
         if active:
             self.store.set_pending()
-            return self.store.decide("deferred", f"run {active} is in progress; the dataset will be re-checked "
+            return self._decide("deferred", f"run {active} is in progress; the dataset will be re-checked "
                                                  "as soon as it finishes", source=source, hf_sha=hf_sha, run_id=active)
         try:
             repo_state = self.hf.inspect(repo)
         except Exception as exc:
-            return self.store.decide("error", f"could not read Hugging Face repo {repo}: {exc}", source=source)
+            return self._decide("error", f"could not read Hugging Face repo {repo}: {exc}", source=source)
         self.store.set_json("last_check", {"ts": utcnow(), "source": source, "commit": repo_state["commit"],
                                            "zips": repo_state["zips"][:5], "url": repo_state["url"]})
         base = {"source": source, "hf_sha": repo_state["commit"]}
         if not repo_state["zips"]:
-            return self.store.decide("no_dataset", f"no .zip dataset in {repo}@{repo_state['commit'][:8]}: nothing to "
+            return self._decide("no_dataset", f"no .zip dataset in {repo}@{repo_state['commit'][:8]}: nothing to "
                                                    "train. Upload a reviewed dataset ZIP to start training.", **base)
         newest = repo_state["zips"][0]
         fp = newest["fingerprint"]
@@ -414,26 +493,26 @@ class Orchestrator:
         try:
             marker = self.trained_marker(fp)
         except Exception as exc:  # unknown -> do NOT start (a duplicate GPU run is worse than waiting)
-            return self.store.decide("error", f"cannot read the trained-dataset record in S3: {exc}", **base)
+            return self._decide("error", f"cannot read the trained-dataset record in S3: {exc}", **base)
         if marker and not force:
-            return self.store.decide(
+            return self._decide(
                 "skipped_trained",
                 f"{newest['path']} has the same content (SHA-256 {fp[:12]}…) as a dataset already trained in model "
                 f"{marker.get('version')} (gate: {marker.get('status')}); not retraining", marker=marker, **base)
         fails = self.store.failures(fp)
         if fails >= self.cfg.pipeline_max_auto_attempts and not force and source != "manual":
-            return self.store.decide("skipped_failed", f"{newest['path']} failed {fails} times; not retrying "
+            return self._decide("skipped_failed", f"{newest['path']} failed {fails} times; not retrying "
                                                        "automatically. Use 'Retrain now' on the dashboard.", **base)
         problems = self.kaggle.problems()
         if problems:
-            return self.store.decide("blocked", "Kaggle is not configured: " + "; ".join(problems), **base)
+            return self._decide("blocked", "Kaggle is not configured: " + "; ".join(problems), **base)
         comet_problem = self.comet_preflight()
         if comet_problem:
-            return self.store.decide("blocked", comet_problem, **base)
+            return self._decide("blocked", comet_problem, **base)
         if not self.secrets_sync_values():
             ready, text = self.kaggle.secrets_ready()
             if not ready:
-                return self.store.decide("blocked", f"Kaggle secrets dataset {self.kaggle.secrets_dataset} is not ready "
+                return self._decide("blocked", f"Kaggle secrets dataset {self.kaggle.secrets_dataset} is not ready "
                                                     f"({text}). See docs/setup/retraining_pipeline.md, step 'Kaggle secrets'.", **base)
 
         dataset = {"repo": repo, "commit": repo_state["commit"], "url": repo_state["url"], "zip": newest["path"],
@@ -444,7 +523,7 @@ class Orchestrator:
                       dataset, self.cfg.retrain_mode)
         if not self.store.claim_active(run["id"]):
             self.store.set_pending()
-            return self.store.decide("deferred", "another run started at the same moment; re-checking later", **base)
+            return self._decide("deferred", "another run started at the same moment; re-checking later", **base)
         try:
             serving = self.probe()
             run["served_before"] = serving.get("detector_version") if serving else None
@@ -458,10 +537,46 @@ class Orchestrator:
         event(run, f"{source} trigger: new dataset {newest['path']} ({_size(newest['size'])}) at HF commit "
                    f"{repo_state['commit'][:8]}; fine-tuning from the served model {run['served_before'] or '(unknown)'}")
         self.store.add_run(run)
-        self.store.decide("started", f"run {run['id']} started for {newest['path']}", run_id=run["id"], **base)
+        self._decide("started", f"run {run['id']} started for {newest['path']}", run_id=run["id"], **base)
         self._submit(run)
         self.store.save_run(run)
         return {"decision": "started", "run_id": run["id"]}
+
+    # ---------------------------------------------------------------- trigger alerts
+    # Every check that a person caused (HF webhook, dashboard button, the re-check after a run) ends in one decision,
+    # and that decision is sent to the alert channels: "training started", "same dataset, nothing started", "blocked
+    # because ...". So nobody has to open the server or the dashboard to learn what an upload did.
+    # The fallback poll (source "schedule") runs every few minutes: it only reports a start, and the same blocked /
+    # error message at most once every TRIGGER_REPEAT_SECONDS, so a lasting problem cannot flood the inbox.
+    TRIGGER_REPEAT_SECONDS = 6 * 3600
+
+    def _decide(self, decision: str, message: str, **extra) -> dict:
+        entry = self.store.decide(decision, message, **extra)
+        try:
+            if self.reportable(entry):
+                alerts = self.trigger_alert(entry)
+                self.store.add_trigger(trigger_record(entry, alerts))
+        except Exception as exc:  # an alert or the history must never change what the pipeline does
+            log.warning("trigger alert / history failed: %s", exc)
+        return entry
+
+    def reportable(self, entry: dict) -> bool:
+        """Does this decision go to the alert channels and the trigger history?"""
+        decision, source = entry.get("decision"), entry.get("source") or "?"
+        if decision not in TRIGGER_TITLES:
+            return False
+        if source != "schedule" or decision == "started":
+            return True
+        if decision in ("blocked", "error"):  # a lasting problem: once per TRIGGER_REPEAT_SECONDS
+            digest = hashlib.sha1(f"{decision}|{entry.get('message')}".encode()).hexdigest()[:16]
+            return bool(self.store.r.set(f"pipeline:trigger_alerted:{digest}", 1, nx=True, ex=self.TRIGGER_REPEAT_SECONDS))
+        return False  # the poll found nothing new
+
+    def trigger_alert(self, entry: dict) -> list[str]:
+        if not self.notifier:
+            return []
+        subject = TRIGGER_TITLES[entry["decision"]] + (f": {entry['zip']}" if entry.get("zip") else "")
+        return self.notifier.send("trigger", subject, trigger_text(entry, self.cfg))
 
     # ---------------------------------------------------------------- Comet + secrets
     def comet_preflight(self) -> str | None:
@@ -866,7 +981,7 @@ def rollback(store: PipelineStore, s3, cfg, who: str) -> dict:
 
 def set_alerts(store: PipelineStore, prefs: dict, who: str) -> dict:
     current = store.get_json("alerts") or {}
-    changed = {k: bool(v) for k, v in prefs.items() if k in {"email", "slack", "stuck"}}
+    changed = {k: bool(v) for k, v in prefs.items() if k in {"email", "slack", "stuck", "trigger"}}
     current.update(changed)
     store.set_json("alerts", current)
     store.audit("alerts", ", ".join(f"{k} {'on' if v else 'off'}" for k, v in changed.items()) or "no change", who)
@@ -1012,6 +1127,7 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
         "lineage": build_lineage(runs, serving_version, run),
         "runs": [run_summary(r) for r in runs],
         "decisions": store.decisions(30),
+        "triggers": trigger_history(store, 50),
         "audit": store.audit_log(30),
         "serving": serving,
         "rollback_to": (serving.get("alias") or {}).get("previous_version"),
@@ -1019,7 +1135,8 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
         "training": training_settings(store, cfg),
         "alerts": {"channels": channels, "prefs": {"email": alert_prefs.get("email", channels["email"]),
                                                    "slack": alert_prefs.get("slack", channels["slack"]),
-                                                   "stuck": alert_prefs.get("stuck", True)}},
+                                                   "stuck": alert_prefs.get("stuck", True),
+                                                   "trigger": alert_prefs.get("trigger", True)}},
         "last_webhook_at": webhooks[0]["ts"] if webhooks else None,
         "last_check": store.get_json("last_check"),
         "pending_recheck": bool(store.r.exists("pipeline:pending")),

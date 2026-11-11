@@ -2,7 +2,9 @@
 
   email  -> a run finished (deployed / rejected), failed or was stopped
   slack  -> a model was deployed, or a run failed / was stopped
-  stuck  -> the Kaggle notebook sent no heartbeat for PIPELINE_STUCK_MINUTES (to every configured channel)
+  stuck   -> the Kaggle notebook sent no heartbeat for PIPELINE_STUCK_MINUTES (to every configured channel)
+  trigger -> what a dataset upload / webhook / "Check now" led to: training started, same dataset so nothing started,
+             blocked, ... (to every configured channel; Orchestrator.trigger_alert decides when one is sent)
 """
 from __future__ import annotations
 
@@ -32,12 +34,13 @@ class Notifier:
         saved = self.store.get_json("alerts") or {}
         ch = self.channels()
         return {"email": saved.get("email", ch["email"]), "slack": saved.get("slack", ch["slack"]),
-                "stuck": saved.get("stuck", True)}
+                "stuck": saved.get("stuck", True), "trigger": saved.get("trigger", True)}
 
     def send(self, kind: str, subject: str, text: str) -> list[str]:
         prefs, ch, sent = self.prefs(), self.channels(), []
-        want_email = ch["email"] and ((prefs["email"] and kind in EMAIL_KINDS) or (prefs["stuck"] and kind == "stuck"))
-        want_slack = ch["slack"] and ((prefs["slack"] and kind in SLACK_KINDS) or (prefs["stuck"] and kind == "stuck"))
+        urgent = (prefs["stuck"] and kind == "stuck") or (prefs["trigger"] and kind == "trigger")
+        want_email = ch["email"] and ((prefs["email"] and kind in EMAIL_KINDS) or urgent)
+        want_slack = ch["slack"] and ((prefs["slack"] and kind in SLACK_KINDS) or urgent)
         if want_email:
             try:
                 self._email(subject, text)

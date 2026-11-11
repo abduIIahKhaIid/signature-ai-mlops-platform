@@ -7,6 +7,7 @@ import {
   DECISION,
   RUN_STATUS,
   TONE_PILL,
+  TRIGGER_SOURCE,
   type CometInfo,
   type DatasetSummary,
   type Overfitting,
@@ -14,6 +15,7 @@ import {
   type PipelineState,
   type Run,
   type RunSummary,
+  type TriggerRecord,
 } from "../lib/pipeline";
 
 const INK = "#16245A";
@@ -901,6 +903,7 @@ function AlertsCard({ state, admin }: { state: PipelineState; admin: ReturnType<
     ["email", "Email me when a run finishes, fails or is stopped", a.channels.email],
     ["slack", "Slack / Discord message on deploy or failure", a.channels.slack],
     ["stuck", "Alert if a run is stuck (no heartbeat for 10 min)", a.channels.email || a.channels.slack],
+    ["trigger", "Tell me what every dataset upload / webhook did (training started, same dataset skipped, blocked)", a.channels.email || a.channels.slack],
   ];
   return (
     <Section title="Alerts" id="alerts">
@@ -911,7 +914,7 @@ function AlertsCard({ state, admin }: { state: PipelineState; admin: ReturnType<
               {label}
               {!available && <span className="block text-[12px]">{k === "slack" ? "Set ALERT_WEBHOOK_URL in the server .env" : "Set SMTP_* and ALERT_EMAIL_TO in the server .env"}</span>}
             </span>
-            <Toggle on={a.prefs[k] && available} label={label} disabled={!available || !state.config.admin_enabled} onChange={(v) => admin.request({ kind: "alerts", body: { [k]: v } })} />
+            <Toggle on={(a.prefs[k] ?? true) && available} label={label} disabled={!available || !state.config.admin_enabled} onChange={(v) => admin.request({ kind: "alerts", body: { [k]: v } })} />
           </li>
         ))}
       </ul>
@@ -1022,6 +1025,90 @@ function Decisions({ state, className = "" }: { state: PipelineState; className?
               );
             })}
           </ul>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+const TRIGGER_FILTERS: [string, string, (t: TriggerRecord) => boolean][] = [
+  ["all", "All", () => true],
+  ["started", "Training started", (t) => t.decision === "started"],
+  ["skipped", "Skipped", (t) => ["skipped_trained", "skipped_failed", "no_dataset", "deferred"].includes(t.decision)],
+  ["problems", "Problems", (t) => ["blocked", "error"].includes(t.decision)],
+];
+
+function TriggerHistory({ state, onSelect }: { state: PipelineState; onSelect: (id: string | null) => void }) {
+  const [filter, setFilter] = useState("all");
+  const all = state.triggers ?? [];
+  const test = TRIGGER_FILTERS.find(([k]) => k === filter)?.[2] ?? (() => true);
+  const list = all.filter(test);
+  const runStatus = (id?: string | null) => state.runs.find((r) => r.id === id);
+  return (
+    <Section title="Trigger history" id="triggers" aside="every dataset upload, webhook and button press, and what it led to">
+      <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Filter the trigger history">
+        {TRIGGER_FILTERS.map(([k, label, f]) => (
+          <button key={k} type="button" onClick={() => setFilter(k)} aria-pressed={filter === k}
+            className={`rounded-full px-3 py-1 text-[13px] font-semibold transition-colors ${filter === k ? "bg-ink text-white" : "bg-desk text-ink-soft hover:bg-desk-deep"}`}>
+            {label} <span className="tnum opacity-70">{all.filter(f).length}</span>
+          </button>
+        ))}
+      </div>
+      {list.length === 0 ? (
+        <Empty>{all.length === 0 ? "No uploads yet. Each dataset upload (HF webhook), Check now and Retrain anyway is listed here with its outcome." : "Nothing in this filter."}</Empty>
+      ) : (
+        <div className="max-h-[420px] overflow-auto overscroll-contain" tabIndex={0} aria-label="Trigger history, scrolls">
+          <table className="w-full min-w-[820px] text-left text-[14px]">
+            <thead className="sticky top-0 bg-white text-[13px] text-ink-faint">
+              <tr>
+                <th className="pb-2 font-normal">When</th>
+                <th className="pb-2 font-normal">Trigger</th>
+                <th className="pb-2 font-normal">Dataset</th>
+                <th className="pb-2 font-normal">Outcome</th>
+                <th className="pb-2 font-normal">Details</th>
+                <th className="pb-2 font-normal">Alert</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-desk">
+              {list.map((t, i) => {
+                const meta = DECISION[t.decision] ?? { label: t.decision, tone: "plain" as const };
+                const run = runStatus(t.run_id);
+                const runMeta = run ? RUN_STATUS[run.status] ?? { label: run.status, tone: "plain" as const } : null;
+                return (
+                  <tr key={`${t.ts}-${i}`} className="align-top">
+                    <td className="py-2.5 pr-3 tnum whitespace-nowrap" title={t.ts}>
+                      <div className="font-semibold">{new Date(t.ts).toLocaleDateString()} {clock(t.ts)}</div>
+                      <div className="text-[12px] text-ink-faint">{ago(t.ts)}</div>
+                    </td>
+                    <td className="py-2.5 pr-3 whitespace-nowrap">
+                      <div>{TRIGGER_SOURCE[t.source ?? ""] ?? t.source ?? "—"}</div>
+                      {t.hf_sha && <div className="text-[12px] text-ink-faint tnum" title={t.hf_sha}>commit {short(t.hf_sha, 8)}</div>}
+                    </td>
+                    <td className="min-w-[170px] max-w-[240px] py-2.5 pr-3">
+                      <div className="break-words [overflow-wrap:anywhere]">{t.zip ?? "—"}</div>
+                      {t.fingerprint && <div className="text-[12px] text-ink-faint tnum" title={t.fingerprint}>{short(t.fingerprint, 12)}</div>}
+                    </td>
+                    <td className="py-2.5 pr-3 whitespace-nowrap"><Pill tone={meta.tone}>{meta.label}</Pill></td>
+                    <td className="py-2.5 pr-3 text-[13.5px] text-ink-soft">
+                      <p className="break-words [overflow-wrap:anywhere]">{t.message}</p>
+                      {t.trained_version && <p className="mt-1 text-[12px] text-ink-faint">Trained before into {t.trained_version}{t.trained_status ? ` (gate: ${t.trained_status})` : ""}</p>}
+                      {t.run_id && (
+                        <button type="button" className="mt-1 inline-flex items-center gap-2 text-[13px] font-semibold text-signal underline underline-offset-4" onClick={() => onSelect(t.run_id ?? null)}>
+                          Open run {t.run_id.replace("run-", "")}
+                          {runMeta && <Pill tone={runMeta.tone}>{runMeta.label}</Pill>}
+                        </button>
+                      )}
+                    </td>
+                    <td className="py-2.5 text-[13px] whitespace-nowrap">
+                      {t.alerts && t.alerts.length > 0
+                        ? <span className="inline-flex items-center gap-1 text-verified"><Check className="h-3.5 w-3.5" aria-hidden />{t.alerts.map((a) => ({ slack: "Slack", email: "Email" })[a] ?? a).join(", ")}</span>
+                        : <span className="text-ink-faint">—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </Section>
@@ -1266,6 +1353,8 @@ export default function PipelinePage() {
       </div>
 
       <EventLog state={state} run={run} fill={false} />
+
+      <TriggerHistory state={state} onSelect={setPinned} />
 
       <History state={state} selected={run?.id} onSelect={setPinned} />
 
