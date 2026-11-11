@@ -15,6 +15,7 @@ import {
   type PipelineState,
   type Run,
   type RunSummary,
+  type AliasSummary,
   type TriggerRecord,
 } from "../lib/pipeline";
 
@@ -96,8 +97,8 @@ function stoppable(state: PipelineState, run: Run | null): boolean {
 }
 
 // ---------------------------------------------------------------- admin actions (token + confirmation)
-type ActionKind = "check" | "force" | "stop" | "rollback" | "alerts" | "settings";
-interface PendingAction { kind: ActionKind; body?: Record<string, boolean | number | null>; runId?: string }
+type ActionKind = "check" | "force" | "stop" | "rollback" | "alerts" | "settings" | "promote";
+interface PendingAction { kind: ActionKind; body?: Record<string, boolean | number | string | null>; runId?: string; needsReason?: boolean }
 
 const ACTION_TEXT: Record<ActionKind, { title: string; intro: string; bullets?: string[]; confirm: string; danger?: boolean }> = {
   check: { title: "Check for a new dataset", intro: "This looks at the Hugging Face repo now instead of waiting for the webhook.", confirm: "Check now" },
@@ -123,6 +124,13 @@ const ACTION_TEXT: Record<ActionKind, { title: string; intro: string; bullets?: 
   },
   alerts: { title: "Change alert settings", intro: "Alert settings are shared by everyone who uses this dashboard.", confirm: "Save" },
   settings: { title: "Change training epochs", intro: "The new value is used from the next run. A run that is already training keeps its value.", confirm: "Save" },
+  promote: {
+    title: "Serve this candidate in production?",
+    intro: "The production alias moves to the candidate. Workers load it at their next check; the current model is kept as the previous version for roll back.",
+    bullets: ["a candidate that passed its validation gate is promoted with that verdict", "a candidate without a passed gate needs a reason; it is recorded as an admin override", "the promotion is recorded in the event log"],
+    confirm: "Promote",
+    danger: true,
+  },
 };
 
 function useAdmin(onDone: () => void) {
@@ -130,6 +138,7 @@ function useAdmin(onDone: () => void) {
   const [token, setToken] = useState("");
   const [message, setMessage] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
 
   const saved = () => {
     try {
@@ -152,7 +161,7 @@ function useAdmin(onDone: () => void) {
       const res = await fetch(url, {
         method: "POST",
         headers: { "X-Admin-Token": value, ...(action.body ? { "Content-Type": "application/json" } : {}) },
-        body: action.body ? JSON.stringify(action.body) : undefined,
+        body: action.body ? JSON.stringify(action.kind === "promote" ? { ...action.body, reason: note.trim() || null } : action.body) : undefined,
       });
       if (res.status === 401) {
         try {
@@ -179,6 +188,7 @@ function useAdmin(onDone: () => void) {
         rollback: `Rolled back to ${body.to ?? "the previous model"}. Workers switch within a few minutes.`,
         alerts: "Alert settings saved.",
         settings: `Saved: the next run trains for up to ${body.epochs ?? "?"} epochs.`,
+        promote: `Promoted ${body.model ?? ""} ${body.to ?? ""}${body.override ? " (admin override)" : ""}. Workers switch within a few minutes.`,
       };
       setMessage({ tone: "good", text: done[action.kind] });
       setPending(null);
@@ -195,14 +205,15 @@ function useAdmin(onDone: () => void) {
   const request = (action: PendingAction) => {
     setMessage(null);
     const t = saved();
-    const needsConfirm = action.kind === "stop" || action.kind === "rollback" || action.kind === "force";
+    const needsConfirm = ["stop", "rollback", "force", "promote"].includes(action.kind);
+    setNote("");
     if (t && !needsConfirm) send(action, t);
     else {
       setToken(t);
       setPending(action);
     }
   };
-  return { pending, setPending, token, setToken, message, busy, send, request };
+  return { pending, setPending, token, setToken, message, busy, send, request, note, setNote };
 }
 
 function ActionDialog({ admin }: { admin: ReturnType<typeof useAdmin> }) {
@@ -231,6 +242,22 @@ function ActionDialog({ admin }: { admin: ReturnType<typeof useAdmin> }) {
               {text.bullets.map((b) => <li key={b}>{b}</li>)}
             </ul>
           )}
+          {a.kind === "promote" && (
+            <>
+              <label htmlFor="promote-reason" className="field-label mt-4 block">
+                Reason {a.needsReason ? <span className="text-fault">(required: this candidate has not passed its gate)</span> : <span className="text-ink-faint">(optional)</span>}
+              </label>
+              <textarea
+                id="promote-reason"
+                value={admin.note}
+                onChange={(e) => admin.setNote(e.target.value)}
+                maxLength={300}
+                rows={2}
+                className="mt-1 w-full rounded-lg border border-desk-line px-3 py-2 focus:border-signal"
+                placeholder="e.g. checked by hand on 50 real documents"
+              />
+            </>
+          )}
           <label htmlFor="admin-token" className="field-label mt-4 block">Admin token</label>
           <input
             id="admin-token"
@@ -245,7 +272,7 @@ function ActionDialog({ admin }: { admin: ReturnType<typeof useAdmin> }) {
           {admin.message?.tone === "bad" && <p className="mt-2 text-[14px] text-fault">{admin.message.text}</p>}
           <div className="mt-5 flex justify-end gap-2">
             <button type="button" className="btn-quiet" onClick={() => admin.setPending(null)}>{a.kind === "stop" ? "Keep running" : "Cancel"}</button>
-            <button type="submit" className={text.danger ? "btn bg-fault text-white hover:brightness-110" : "btn-primary"} disabled={!admin.token || admin.busy}>
+            <button type="submit" className={text.danger ? "btn bg-fault text-white hover:brightness-110" : "btn-primary"} disabled={!admin.token || admin.busy || (a.kind === "promote" && !!a.needsReason && !admin.note.trim())}>
               {admin.busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
               {text.confirm}
             </button>
@@ -290,7 +317,7 @@ function RunOverview({ state, run }: { state: PipelineState; run: Run | null }) 
   const training = live && current?.key === "training";
   const epochNow = training ? Math.min(eps.length + 1, L.max_epochs ?? eps.length + 1) : eps.length;
   let title = live ? current?.label ?? "Working" : status.label;
-  if (training) title = `Fine-tuning RT-DETRv2 · epoch ${epochNow} of ${L.max_epochs ?? "?"}`;
+  if (training) title = `Training the detection model · epoch ${epochNow} of ${L.max_epochs ?? "?"}`;
   if (run.status === "stopped" && stoppedAt) title = `Stopped during “${stoppedAt.label}”`;
   if (run.status === "failed" && failed) title = `Failed at: ${failed.label}`;
   if (live && run.stop_requested_at) title = "Stopping safely…";
@@ -785,38 +812,83 @@ function CleaningCard({ run }: { run: Run | null }) {
   );
 }
 
-/** What the inference workers serve right now: detector and similarity model, with any hot-reload error. */
-function ServingModelsCard({ state }: { state: PipelineState }) {
+/** What the inference workers serve right now, the candidate waiting behind it, and the Promote action. */
+function gateBadge(alias?: AliasSummary | null) {
+  if (!alias?.version) return null;
+  const g = alias.gate;
+  if (!g) return <Pill tone="warn">no gate record</Pill>;
+  if (g.passed) return <Pill tone="good">gate passed</Pill>;
+  if (g.override) return <Pill tone="live">admin override</Pill>;
+  return <Pill tone="bad">gate rejected</Pill>;
+}
+
+function ServingModelsCard({ state, admin }: { state: PipelineState; admin: ReturnType<typeof useAdmin> }) {
   const sv = state.serving;
   if (!sv) return null;
   const w = sv.worker;
   const label = (v?: string | null) => (v ? versionDate(v) ?? v : "—");
   const simName = w?.similarity_model === "resnet18-finetuned" ? "Siamese ResNet18" : w?.similarity_model ?? null;
-  const rows: { name: string; value: React.ReactNode; detail?: string; error?: string | null }[] = [
-    { name: "Detector", value: label(w?.detector_version), detail: "RT-DETRv2", error: w?.last_detector_reload_error },
+  const models: { key: "detection" | "similarity"; name: string; serving: React.ReactNode; detail?: string; error?: string | null }[] = [
+    { key: "detection", name: "Detector", serving: label(w?.detector_version), detail: w?.detector_model ?? undefined, error: w?.last_detector_reload_error },
     {
+      key: "similarity",
       name: "Similarity",
-      value: w?.similarity_version ? label(w.similarity_version) : simName ? "built-in weights" : "not loaded",
+      serving: w?.similarity_version ? label(w.similarity_version) : simName ? "built-in weights" : "not loaded",
       detail: simName ? `${simName}${w?.similarity_threshold != null ? `, match line ${(w.similarity_threshold * 100).toFixed(1)}%` : ""}` : undefined,
       error: w?.last_similarity_reload_error,
     },
   ];
   return (
     <Section title="Models on the workers" id="serving" aside={sv.checked_at ? `checked ${ago(sv.checked_at)}` : undefined}>
-      {sv.worker_error && !w ? (
-        <p className="rounded-lg bg-fault-soft px-3 py-2 text-[14px] text-fault">No worker answered: {sv.worker_error}</p>
-      ) : (
-        <dl className="grid gap-2">
-          {rows.map((r) => (
-            <div key={r.name} className={`rounded-lg p-3 ${r.error ? "bg-fault-soft" : "bg-desk/60"}`}>
-              <dt className="text-[13px] text-ink-faint">{r.name}{r.detail ? ` · ${r.detail}` : ""}</dt>
-              <dd className="break-all font-bold" title={typeof r.value === "string" ? r.value : undefined}>{r.value}</dd>
-              {r.error && <dd className="mt-1 break-words text-[12.5px] text-fault [overflow-wrap:anywhere]">Hot reload problem: {r.error}</dd>}
+      {sv.worker_error && !w && <p className="mb-2 rounded-lg bg-fault-soft px-3 py-2 text-[14px] text-fault">No worker answered: {sv.worker_error}</p>}
+      <div className="grid gap-3">
+        {models.map((m) => {
+          const prod = sv.aliases?.[m.key]?.production;
+          const cand = sv.aliases?.[m.key]?.latest;
+          const follows = sv.following?.[m.key];
+          // versions are named v<UTC timestamp>-<id>, so a string compare is a time compare: an older candidate
+          // (e.g. after the gate promoted a newer pipeline run) is not offered for promotion
+          const waiting = !!cand?.version && cand.version !== prod?.version && (!prod?.version || cand.version > prod.version);
+          const candPassed = !!cand?.gate?.passed;
+          return (
+            <div key={m.key} className={`rounded-lg p-3 ${m.error ? "bg-fault-soft" : "bg-desk/60"}`}>
+              <div className="text-[13px] text-ink-faint">{m.name}{m.detail ? ` · ${m.detail}` : ""}</div>
+              <div className="break-all font-bold">{m.serving}</div>
+              {follows && follows !== "production" && (
+                <p className="mt-1 text-[12.5px] font-semibold text-caution">
+                  Workers follow “{follows}”: any notebook run goes live without a gate. Set {m.key === "detection" ? "MODEL_ALIAS" : "SIMILARITY_S3_ALIAS"}=production.
+                </p>
+              )}
+              <dl className="mt-2 grid gap-1 text-[13px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <dt className="text-ink-faint">Production</dt>
+                  <dd className="font-semibold">{label(prod?.version)}</dd>
+                  {gateBadge(prod)}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <dt className="text-ink-faint">Candidate</dt>
+                  <dd className="font-semibold">{waiting ? label(cand?.version) : "same as production"}</dd>
+                  {waiting && (cand?.gate ? gateBadge(cand) : <Pill tone="plain">not gated</Pill>)}
+                </div>
+              </dl>
+              {m.error && <p className="mt-1 break-words text-[12.5px] text-fault [overflow-wrap:anywhere]">Hot reload problem: {m.error}</p>}
+              {waiting && (
+                <button
+                  type="button"
+                  className="btn-quiet mt-2 px-3 py-1.5 text-[13px]"
+                  disabled={!state.config.admin_enabled || admin.busy}
+                  onClick={() => admin.request({ kind: "promote", body: { model: m.key, version: cand?.version ?? null }, needsReason: !candPassed })}
+                >
+                  Promote candidate{candPassed ? "" : " (override)"}
+                </button>
+              )}
             </div>
-          ))}
-        </dl>
-      )}
-      <p className="mt-2 text-[12.5px] text-ink-faint">Workers re-check both S3 aliases every {secs(w?.hot_reload_poll_seconds ?? state.config.model_poll_seconds ?? 300)}; a release that fails to load is never swapped in.</p>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[12.5px] text-ink-faint">
+        Notebooks write candidates to “latest”. Only a validation gate or an admin can move “production”, and workers refuse a production alias without a gate record. Workers re-check every {secs(w?.hot_reload_poll_seconds ?? state.config.model_poll_seconds ?? 300)}.
+      </p>
     </Section>
   );
 }
@@ -1371,7 +1443,7 @@ export default function PipelinePage() {
             <Steps phases={state.phases} run={run} eta={state.eta} />
           </section>
           <LineageCard state={state} />
-          <ServingModelsCard state={state} />
+          <ServingModelsCard state={state} admin={admin} />
           <TrainingSettingsCard state={state} admin={admin} />
           <AlertsCard state={state} admin={admin} />
           <RollbackCard state={state} admin={admin} />

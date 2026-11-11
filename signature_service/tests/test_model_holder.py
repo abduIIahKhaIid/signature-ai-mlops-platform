@@ -128,3 +128,40 @@ def test_a_good_poll_clears_the_error(holder, monkeypatch):
     monkeypatch.setattr(tasks.ModelHolder, "_load_similarity_from_s3", staticmethod(lambda alias=None: good))
     holder.poll_once()
     assert holder.embedder is good and holder.last_similarity_reload_error is None and holder.last_reload_error is None
+
+
+def test_unapproved_detector_alias_at_start_up_serves_the_last_approved_detector(holder, monkeypatch):
+    from app.promotion import UnapprovedRelease
+
+    def refused():
+        raise UnapprovedRelease("alias 'production' -> v9 has no gate record")
+    monkeypatch.setattr(registry, "resolve_current_model", refused)
+    monkeypatch.setattr(registry, "last_served_detector", lambda: types.SimpleNamespace(version="det-v0"))
+    monkeypatch.setattr(tasks.ModelHolder, "_load_similarity_from_s3",
+                        staticmethod(lambda alias=None: types.SimpleNamespace(version="sim-v1", threshold=0.8)))
+    holder.load()
+    assert holder.detector.version == "det-v0"
+    assert "no gate record" in holder.last_detector_reload_error and "last approved detector det-v0" in holder.last_reload_error
+
+    monkeypatch.setattr(registry, "last_served_detector", lambda: None)     # a fresh host has nothing to fall back to
+    with pytest.raises(UnapprovedRelease):
+        tasks.ModelHolder().load()
+
+
+def test_approved_start_up_records_the_serving_detector(holder, monkeypatch, tmp_path):
+    recorded = []
+    monkeypatch.setattr(registry, "remember_serving_detector", recorded.append)
+    monkeypatch.setattr(tasks, "settings", dataclasses.replace(tasks.settings, model_source="s3", model_version=None))
+    monkeypatch.setattr(tasks.ModelHolder, "_load_similarity_from_s3",
+                        staticmethod(lambda alias=None: types.SimpleNamespace(version="sim-v1", threshold=0.8)))
+    holder.load()
+    assert recorded == ["det-v1"]
+
+
+def test_detector_display_name_follows_the_model_architecture():
+    from app.inference import detector_display_name
+
+    assert detector_display_name("rt_detr_v2") == "RT-DETRv2"
+    assert detector_display_name("d_fine") == "D-FINE"
+    assert detector_display_name("some_new_detr") == "SOME-NEW-DETR"
+    assert detector_display_name(None) == "Detector"

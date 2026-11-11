@@ -73,12 +73,28 @@ class ModelHolder:
         import torch
 
         from .inference import SignatureDetector, SignatureEmbedder
-        from .model_registry import resolve_current_model
+        from .model_registry import last_served_detector, remember_serving_detector, resolve_current_model
+        from .promotion import UnapprovedRelease
 
         torch.set_num_threads(settings.torch_threads)
         started = time.perf_counter()
         with observability.span("load_models"):
-            self.detector = SignatureDetector(resolve_current_model())
+            try:
+                resolved = resolve_current_model()
+                approved = True
+            except UnapprovedRelease as exc:
+                # The serving alias points to an unapproved release. Serve the last approved detector of this host
+                # instead of failing (no detector = no service at all); without one, start-up has to fail.
+                fallback = last_served_detector()
+                if fallback is None:
+                    raise
+                resolved, approved = fallback, False
+                self.last_detector_reload_error = f"start-up: {exc}; serving the last approved detector {fallback.version}"
+                self.last_reload_error = f"detector: {self.last_detector_reload_error}"
+                log.error("detector alias refused at start-up (%s); serving last approved %s", exc, fallback.version)
+            self.detector = SignatureDetector(resolved)
+            if approved and settings.model_source == "s3" and not settings.model_version:
+                remember_serving_detector(self.detector.version)
             self.embedder = self._load_similarity_safely(SignatureEmbedder)
         self.cold_start_seconds = round(time.perf_counter() - started, 3)
         log.info("models ready in %.2fs (detector=%s similarity=%s)", self.cold_start_seconds,
@@ -177,6 +193,9 @@ class ModelHolder:
                 raise
             with self._swap_lock:
                 self.detector = new_detector
+            from .model_registry import remember_serving_detector
+
+            remember_serving_detector(target)
             log.info("detector hot reload complete: now serving %s", target)
 
     def _reload_similarity_if_needed(self) -> None:
@@ -337,6 +356,7 @@ def detect_signature(self, image_key: str, threshold: float | None = None,
              self.request.id, detector.version, len(detections), queue_wait_ms, inference_ms, self.request.retries)
     return {
         "model_version": detector.version,
+        "detector_model": getattr(detector, "name", None),
         "image_size": {"width": image.width, "height": image.height},
         "signature_count": len(detections),
         "detections": detections,
@@ -390,6 +410,7 @@ def verify_signatures(self, reference_key: str, candidate_key: str, crop: bool =
         "similarity_model": embedder.name,
         "similarity_version": embedder.version,
         "detector_version": detector.version,
+        "detector_model": getattr(detector, "name", None),
         "reference": sides["reference"],
         "candidate": sides["candidate"],
         "note": ("Siamese ResNet18; threshold loaded from the validated S3 model alias." if embedder.version
@@ -405,6 +426,7 @@ def model_info() -> dict:
     models.ensure_loaded()
     return {
         "detector_version": models.detector.version,
+        "detector_model": getattr(models.detector, "name", None),
         "detector_load_seconds": models.detector.load_seconds,
         "similarity_model": models.embedder.name if models.embedder else None,
         "similarity_version": models.embedder.version if models.embedder else None,

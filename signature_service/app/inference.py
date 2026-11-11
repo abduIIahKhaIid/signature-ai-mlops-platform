@@ -17,6 +17,19 @@ from .model_registry import ResolvedModel
 
 log = logging.getLogger("signature.inference")
 
+# Display names for the Hugging Face `model_type` of the loaded detector. The architecture comes from the model's own
+# config.json, so the UI shows whatever was actually trained (RT-DETRv2 today, D-FINE or another DETR tomorrow).
+DETECTOR_NAMES = {
+    "rt_detr_v2": "RT-DETRv2", "rt_detr": "RT-DETR", "d_fine": "D-FINE", "deformable_detr": "Deformable DETR",
+    "conditional_detr": "Conditional DETR", "dab_detr": "DAB-DETR", "detr": "DETR", "yolos": "YOLOS",
+}
+
+
+def detector_display_name(model_type: str | None) -> str:
+    if not model_type:
+        return "Detector"
+    return DETECTOR_NAMES.get(model_type, model_type.replace("_", "-").upper())
+
 
 class InvalidImage(ValueError):
     pass
@@ -44,6 +57,8 @@ class SignatureDetector:
         self.processor = AutoImageProcessor.from_pretrained(resolved.path, use_fast=False)
         self.model = AutoModelForObjectDetection.from_pretrained(resolved.path).eval()
         self.id2label = {int(k): v for k, v in self.model.config.id2label.items()}
+        self.architecture = getattr(self.model.config, "model_type", None)
+        self.name = detector_display_name(self.architecture)
         # Warm-up so the first real request does not pay one-off initialisation costs.
         self.detect(Image.new("RGB", (640, 640), "white"), threshold=1.01)
         self.load_seconds = round(time.perf_counter() - started, 3)

@@ -31,6 +31,7 @@ export interface DetectSimilarity {
 
 export interface DetectResult {
   model_version: string;
+  detector_model?: string | null;
   image_size: { width: number; height: number };
   signature_count: number;
   detections: Detection[];
@@ -55,6 +56,7 @@ export interface VerifyResult {
   similarity_model: string;
   similarity_version: string | null;
   detector_version: string;
+  detector_model?: string | null;
   reference: VerifySide;
   candidate: VerifySide;
   note: string;
@@ -73,6 +75,7 @@ export interface JobBody<T> {
 
 export interface ModelInfo {
   detector_version: string;
+  detector_model?: string | null;
   detector_load_seconds: number;
   similarity_model: string | null;
   similarity_version: string | null;

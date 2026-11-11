@@ -351,7 +351,7 @@ export default function DetectPage() {
               <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[14px]">
                 <dt className="text-ink-faint">Model</dt>
                 <dd className="truncate" title={result.model_version}>
-                  RT-DETRv2{versionDate(result.model_version) ? `, trained ${versionDate(result.model_version)}` : ` ${result.model_version}`}
+                  {result.detector_model ?? "Detector"}{versionDate(result.model_version) ? `, trained ${versionDate(result.model_version)}` : ` ${result.model_version}`}
                 </dd>
                 <dt className="text-ink-faint">Worker</dt>
                 <dd className="tnum">

@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -91,6 +93,12 @@ class AlertPrefs(BaseModel):
     trigger: bool | None = None
 
 
+class PromoteBody(BaseModel):
+    model: Literal["detection", "similarity"]
+    version: str | None = Field(default=None, max_length=128, description="default: the version behind 'latest'")
+    reason: str | None = Field(default=None, max_length=300, description="required when the version did not pass its gate")
+
+
 class TrainingSettings(BaseModel):
     epochs: int | None = Field(default=None, ge=1, le=20, description="max epochs for the next runs; null = default")
 
@@ -110,6 +118,14 @@ async def pipeline_stop(request: Request, run_id: str | None = Query(default=Non
     from .retrain import request_stop
 
     return await _action(request_stop, _store(), _s3(), settings, run_id, _who(request))
+
+
+@router.post("/v1/pipeline/promote", summary="Serve a candidate in production (admin token): detection or similarity")
+async def pipeline_promote(body: PromoteBody, request: Request, x_admin_token: str | None = Header(default=None)):
+    _require_admin(x_admin_token)
+    from .retrain import promote
+
+    return await _action(promote, _store(), _s3(), settings, body.model, body.version, body.reason, _who(request))
 
 
 @router.post("/v1/pipeline/rollback", summary="Serve the previous model again (admin token)")

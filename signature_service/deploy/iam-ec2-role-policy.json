@@ -36,7 +36,8 @@
             ],
             "Resource": [
                 "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/aliases/*",
-                "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/pipeline_runs/control/*"
+                "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/pipeline_runs/control/*",
+                "arn:aws:s3:::signatureai-df-detr-models/signatureai/similarity/aliases/*"
             ]
         },
         {

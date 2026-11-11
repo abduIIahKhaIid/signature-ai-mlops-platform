@@ -45,7 +45,7 @@ PHASES = [
     ("near_dup", "Near-duplicate screening (pHash + SSIM)", "Kaggle"),
     ("split", "Leakage gate + train / val / test split", "Kaggle"),
     ("warm_start", "Load served model from S3 (fine-tune start)", "Kaggle"),
-    ("training", "Fine-tune RT-DETRv2 (Comet tracking)", "Kaggle"),
+    ("training", "Train the detection model", "Kaggle"),
     ("evaluation", "Held-out test evaluation", "Kaggle"),
     ("calibration", "Threshold calibration (validation set)", "Kaggle"),
     ("package", "Package versioned model", "Kaggle"),
@@ -705,6 +705,18 @@ class Orchestrator:
             info["alias_name"] = self.alias
         except Exception as exc:
             info["alias_error"] = repr(exc)
+        # candidate (latest) and served (production) release of both models, for the dashboard's promotion card
+        aliases = {}
+        for model in PROMOTABLE_MODELS:
+            prefix = model_prefix(self.cfg, model)
+            aliases[model] = {}
+            for name in ("production", "latest"):
+                try:
+                    aliases[model][name] = alias_summary(self._s3_json(f"{prefix}/aliases/{name}.json"))
+                except Exception as exc:
+                    aliases[model][name] = {"error": repr(exc)[:200]}
+        info["aliases"] = aliases
+        info["following"] = {"detection": self.alias, "similarity": self.cfg.similarity_s3_alias}
         self.store.set_json("serving", info)
 
     # ---------------------------------------------------------------- follow the Kaggle run
@@ -970,13 +982,122 @@ def rollback(store: PipelineStore, s3, cfg, who: str) -> dict:
         raise ActionError(f"version {target} has no manifest in S3; refusing to roll back to it")
     body = {"version": target, "manifest_key": f"{prefix}/versions/{target}/manifest.json",
             "artifact_key": f"{prefix}/versions/{target}/artifact.zip", "sha256": manifest.get("artifact_sha256"),
-            "stage": "rollback", "previous_version": current["version"], "rolled_back_at": utcnow(), "rolled_back_by": who}
+            "stage": "rollback", "previous_version": current["version"], "rolled_back_at": utcnow(), "rolled_back_by": who,
+            # an admin action: workers following 'production' accept it (app/promotion.py)
+            "gate": {"version": target, "passed": False, "override": True, "approved_by": who, "approved_at": utcnow(),
+                     "reason": f"roll back from {current['version']} to the previous version {target}"}}
     s3.put_object(Bucket=cfg.model_s3_bucket, Key=f"{prefix}/aliases/{alias}.json", Body=json.dumps(body, indent=2).encode(),
                   ContentType="application/json", ServerSideEncryption="AES256")
     store.audit("rollback", f"alias '{alias}': {current['version']} -> {target}; workers switch within "
                             f"{max(1, round(cfg.model_poll_seconds / 60))} min", who)
     store.r.delete("pipeline:serving")  # the next tick re-reads the alias and asks a worker what it serves
     return {"alias": alias, "from": current["version"], "to": target}
+
+
+# ===================================================================== promotion: candidate (latest) -> production
+PROMOTABLE_MODELS = ("detection", "similarity")
+VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _s3_read(s3, bucket: str, key: str) -> dict | None:
+    try:
+        return json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception as exc:
+        if getattr(exc, "response", {}).get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
+            return None
+        raise
+
+
+def model_prefix(cfg, model: str) -> str:
+    return (cfg.model_s3_prefix if model == "detection" else cfg.similarity_s3_prefix).strip("/")
+
+
+def promote(store: PipelineStore, s3, cfg, model: str, version: str | None, reason: str | None, who: str) -> dict:
+    """Point `production` at a candidate (default: the version behind `latest`), with a gate record for it.
+
+    If the candidate passed its validation gate (pipeline notebook for detection, notebook 03 for similarity) that
+    verdict is recorded. Otherwise the admin must give a reason, and the record says it was an override. Workers
+    following `production` only load aliases with such a record (app/promotion.py)."""
+    from .model_registry import _validate_similarity_alias
+    from .promotion import GATED_ALIAS, gate_problem
+
+    if model not in PROMOTABLE_MODELS:
+        raise ActionError(f"model must be one of {', '.join(PROMOTABLE_MODELS)}")
+    bucket, prefix, reason = cfg.model_s3_bucket, model_prefix(cfg, model), (reason or "").strip()
+    if model == "detection" and store.active() and (store.get_run(store.active()) or {}).get("status") == "deploying":
+        raise ActionError("a deployment is in progress; wait until it finishes")
+    production = _s3_read(s3, bucket, f"{prefix}/aliases/{GATED_ALIAS}.json")
+    if not version:
+        latest = _s3_read(s3, bucket, f"{prefix}/aliases/latest.json")
+        if not latest or not latest.get("version"):
+            raise ActionError(f"there is no {model} candidate: {prefix}/aliases/latest.json does not exist")
+        version = latest["version"]
+    if not VERSION_RE.fullmatch(str(version)):
+        raise ActionError("invalid version name")
+    if production and production.get("version") == version:
+        raise ActionError(f"{version} is already the {model} model in production")
+    manifest = _s3_read(s3, bucket, f"{prefix}/versions/{version}/manifest.json")
+    if not manifest:
+        raise ActionError(f"{model} version {version} has no manifest in S3; refusing to promote it")
+
+    if model == "detection":
+        if not manifest.get("artifact_sha256"):
+            raise ActionError(f"the manifest of {version} has no artifact_sha256")
+        body = {"version": version, "manifest_key": f"{prefix}/versions/{version}/manifest.json",
+                "artifact_key": f"{prefix}/versions/{version}/artifact.zip", "sha256": manifest["artifact_sha256"]}
+        result = _s3_read(s3, bucket, f"{prefix}/pipeline_runs/{version}.json") or {}
+        verdict = result.get("gate") or {}
+        checked_by, metrics = "pipeline validation gate (Kaggle)", {
+            "test_map50": result.get("test_map50"), "baseline_version": verdict.get("baseline_version"),
+            "baseline_test_map50": verdict.get("baseline_test_map50")}
+    else:
+        body = {"version": version, "weights_key": manifest.get("weights_key") or f"{prefix}/versions/{version}/siamese_resnet18.pt",
+                "manifest_key": f"{prefix}/versions/{version}/manifest.json", "sha256": manifest.get("weights_sha256"),
+                "recommended_threshold": manifest.get("recommended_threshold"),
+                "test_auc": manifest.get("test_auc"), "test_eer": manifest.get("test_eer")}
+        try:
+            _validate_similarity_alias(body, prefix)
+        except RuntimeError as exc:
+            raise ActionError(f"{version} cannot be served: {exc}") from exc
+        verdict = _s3_read(s3, bucket, f"{prefix}/versions/{version}/gate.json") or {}
+        checked_by, metrics = "similarity validation gate (notebook)", verdict.get("metrics")
+
+    gate = {"version": version, "approved_by": who, "approved_at": utcnow()}
+    if verdict.get("passed") is True:
+        gate.update(passed=True, checked_by=checked_by, checked_at=verdict.get("checked_at"), metrics=metrics,
+                    reason=reason or "validation gate passed; promoted from the dashboard")
+    else:
+        if not reason:
+            why = "; ".join(map(str, verdict.get("reasons") or [])) or "no gate verdict recorded for it"
+            raise ActionError(f"{version} has not passed its validation gate ({why}). Give a reason to promote it anyway.")
+        gate.update(passed=False, override=True, reason=reason, reasons=verdict.get("reasons") or ["no gate verdict recorded"],
+                    metrics=metrics)
+    body.update(stage="promoted", previous_version=(production or {}).get("version"), promoted_at=utcnow(),
+                promoted_by=who, gate=gate)
+    problem = gate_problem(body, GATED_ALIAS)
+    if problem:  # cannot happen with the record built above; never write an alias the workers would refuse
+        raise ActionError(problem)
+    s3.put_object(Bucket=bucket, Key=f"{prefix}/aliases/{GATED_ALIAS}.json", Body=json.dumps(json_safe(body), indent=2).encode(),
+                  ContentType="application/json", ServerSideEncryption="AES256")
+    previous = (production or {}).get("version") or "(none)"
+    store.audit("promote", f"{model}: {previous} -> {version}" + (" (gate passed)" if gate.get("passed") else
+                                                                   f" (override: {reason})"), who)
+    store.r.delete("pipeline:serving")  # the next tick re-reads the aliases and asks a worker what it serves
+    return {"model": model, "from": (production or {}).get("version"), "to": version, "override": not gate.get("passed"),
+            "switch_within_seconds": cfg.model_poll_seconds}
+
+
+def alias_summary(alias: dict | None) -> dict | None:
+    """The part of an alias the dashboard shows (no keys or checksums)."""
+    if not alias:
+        return None
+    gate = alias.get("gate") if isinstance(alias.get("gate"), dict) else None
+    return {"version": alias.get("version"), "stage": alias.get("stage"), "previous_version": alias.get("previous_version"),
+            "updated_at": alias.get("promoted_at") or alias.get("approved_at_utc") or alias.get("updated_at_utc")
+            or alias.get("rolled_back_at"),
+            "gate": None if gate is None else {"passed": gate.get("passed") is True, "override": gate.get("override") is True,
+                                               "by": gate.get("approved_by") or gate.get("checked_by"),
+                                               "reason": gate.get("reason"), "version": gate.get("version")}}
 
 
 def set_alerts(store: PipelineStore, prefs: dict, who: str) -> dict:

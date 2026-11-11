@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import settings
+from .promotion import require_gate
 
 log = logging.getLogger("signature.registry")
 
@@ -85,7 +86,8 @@ class S3ModelRegistry:
             return version
         if alias not in {"latest", "production"}:
             raise ValueError("MODEL_ALIAS must be 'latest' or 'production' (or set MODEL_VERSION)")
-        return self._json(f"{self.prefix}/aliases/{alias}.json")["version"]
+        # production must carry a gate record for this exact version (app/promotion.py); latest is a candidate
+        return require_gate(self._json(f"{self.prefix}/aliases/{alias}.json"), alias)["version"]
 
     def fetch(self, version: str) -> ResolvedModel:
         manifest = self._json(f"{self.prefix}/versions/{version}/manifest.json")
@@ -182,7 +184,7 @@ def current_similarity_target(client=None) -> dict | None:
     prefix = settings.similarity_s3_prefix.strip("/")
     alias = json.loads(client.get_object(Bucket=settings.model_s3_bucket,
                                          Key=f"{prefix}/aliases/{settings.similarity_s3_alias}.json")["Body"].read())
-    return _validate_similarity_alias(alias, prefix)
+    return require_gate(_validate_similarity_alias(alias, prefix), settings.similarity_s3_alias)
 
 
 def fetch_similarity_weights(client=None, alias: dict | None = None) -> tuple[Path, dict]:
@@ -206,3 +208,30 @@ def fetch_similarity_weights(client=None, alias: dict | None = None) -> tuple[Pa
                 raise RuntimeError("similarity weights SHA-256 mismatch: refusing to load")
             os.replace(tmp, target)
     return target, alias
+
+
+# ---------------------------------------------------------------- last approved detector (start-up fallback)
+def _serving_marker() -> Path:
+    return Path(settings.model_cache_dir) / ".serving_detector"
+
+
+def remember_serving_detector(version: str) -> None:
+    """Record the detector version a worker loaded from an approved alias (shared model-cache volume)."""
+    try:
+        _serving_marker().parent.mkdir(parents=True, exist_ok=True)
+        _serving_marker().write_text(version)
+    except OSError as exc:  # never let bookkeeping break serving
+        log.warning("could not record the serving detector version: %s", exc)
+
+
+def last_served_detector() -> ResolvedModel | None:
+    """The detector this host served last, if it is still in the cache. Used only when the alias is unapproved at
+    start-up, so a bad promotion plus a restart cannot take detection down."""
+    marker = _serving_marker()
+    if settings.model_source != "s3" or not settings.model_s3_bucket or not marker.exists():
+        return None
+    version = marker.read_text().strip()
+    if not version:
+        return None
+    registry = S3ModelRegistry(settings.model_s3_bucket, settings.model_s3_prefix, settings.model_cache_dir)
+    return registry.fetch(version)
