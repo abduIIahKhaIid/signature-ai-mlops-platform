@@ -317,7 +317,7 @@ function RunOverview({ state, run }: { state: PipelineState; run: Run | null }) 
   const training = live && current?.key === "training";
   const epochNow = training ? Math.min(eps.length + 1, L.max_epochs ?? eps.length + 1) : eps.length;
   let title = live ? current?.label ?? "Working" : status.label;
-  if (training) title = `Fine-tuning RT-DETRv2 · epoch ${epochNow} of ${L.max_epochs ?? "?"}`;
+  if (training) title = `Training the detection model · epoch ${epochNow} of ${L.max_epochs ?? "?"}`;
   if (run.status === "stopped" && stoppedAt) title = `Stopped during “${stoppedAt.label}”`;
   if (run.status === "failed" && failed) title = `Failed at: ${failed.label}`;
   if (live && run.stop_requested_at) title = "Stopping safely…";
@@ -829,7 +829,7 @@ function ServingModelsCard({ state, admin }: { state: PipelineState; admin: Retu
   const label = (v?: string | null) => (v ? versionDate(v) ?? v : "—");
   const simName = w?.similarity_model === "resnet18-finetuned" ? "Siamese ResNet18" : w?.similarity_model ?? null;
   const models: { key: "detection" | "similarity"; name: string; serving: React.ReactNode; detail?: string; error?: string | null }[] = [
-    { key: "detection", name: "Detector", serving: label(w?.detector_version), detail: "RT-DETRv2", error: w?.last_detector_reload_error },
+    { key: "detection", name: "Detector", serving: label(w?.detector_version), detail: w?.detector_model ?? undefined, error: w?.last_detector_reload_error },
     {
       key: "similarity",
       name: "Similarity",

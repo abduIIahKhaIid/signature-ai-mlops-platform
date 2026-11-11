@@ -192,7 +192,7 @@ export interface PipelineState {
   triggers?: TriggerRecord[];
   serving: {
     worker?: {
-      detector_version?: string; similarity_model?: string | null; similarity_version?: string | null; similarity_threshold?: number | null;
+      detector_version?: string; detector_model?: string | null; similarity_model?: string | null; similarity_version?: string | null; similarity_threshold?: number | null;
       last_detector_reload_error?: string | null; last_similarity_reload_error?: string | null; hot_reload_poll_seconds?: number;
     };
     worker_error?: string;

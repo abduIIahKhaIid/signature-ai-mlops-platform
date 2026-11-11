@@ -45,7 +45,7 @@ PHASES = [
     ("near_dup", "Near-duplicate screening (pHash + SSIM)", "Kaggle"),
     ("split", "Leakage gate + train / val / test split", "Kaggle"),
     ("warm_start", "Load served model from S3 (fine-tune start)", "Kaggle"),
-    ("training", "Fine-tune RT-DETRv2 (Comet tracking)", "Kaggle"),
+    ("training", "Train the detection model", "Kaggle"),
     ("evaluation", "Held-out test evaluation", "Kaggle"),
     ("calibration", "Threshold calibration (validation set)", "Kaggle"),
     ("package", "Package versioned model", "Kaggle"),

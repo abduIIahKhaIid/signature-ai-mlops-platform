@@ -223,7 +223,7 @@ export default function VerifyPage() {
                   </dd>
                   <dt className="text-ink-faint">Detector</dt>
                   <dd className="truncate" title={result.detector_version}>
-                    RT-DETRv2{versionDate(result.detector_version) ? `, trained ${versionDate(result.detector_version)}` : ""}
+                    {result.detector_model ?? "Detector"}{versionDate(result.detector_version) ? `, trained ${versionDate(result.detector_version)}` : ""}
                   </dd>
                   <dt className="text-ink-faint">Time on worker</dt>
                   <dd className="tnum">{ms(result.timings_ms.total_worker)}</dd>

@@ -356,6 +356,7 @@ def detect_signature(self, image_key: str, threshold: float | None = None,
              self.request.id, detector.version, len(detections), queue_wait_ms, inference_ms, self.request.retries)
     return {
         "model_version": detector.version,
+        "detector_model": getattr(detector, "name", None),
         "image_size": {"width": image.width, "height": image.height},
         "signature_count": len(detections),
         "detections": detections,
@@ -409,6 +410,7 @@ def verify_signatures(self, reference_key: str, candidate_key: str, crop: bool =
         "similarity_model": embedder.name,
         "similarity_version": embedder.version,
         "detector_version": detector.version,
+        "detector_model": getattr(detector, "name", None),
         "reference": sides["reference"],
         "candidate": sides["candidate"],
         "note": ("Siamese ResNet18; threshold loaded from the validated S3 model alias." if embedder.version
@@ -424,6 +426,7 @@ def model_info() -> dict:
     models.ensure_loaded()
     return {
         "detector_version": models.detector.version,
+        "detector_model": getattr(models.detector, "name", None),
         "detector_load_seconds": models.detector.load_seconds,
         "similarity_model": models.embedder.name if models.embedder else None,
         "similarity_version": models.embedder.version if models.embedder else None,

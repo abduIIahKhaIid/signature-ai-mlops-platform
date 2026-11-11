@@ -156,3 +156,12 @@ def test_approved_start_up_records_the_serving_detector(holder, monkeypatch, tmp
                         staticmethod(lambda alias=None: types.SimpleNamespace(version="sim-v1", threshold=0.8)))
     holder.load()
     assert recorded == ["det-v1"]
+
+
+def test_detector_display_name_follows_the_model_architecture():
+    from app.inference import detector_display_name
+
+    assert detector_display_name("rt_detr_v2") == "RT-DETRv2"
+    assert detector_display_name("d_fine") == "D-FINE"
+    assert detector_display_name("some_new_detr") == "SOME-NEW-DETR"
+    assert detector_display_name(None) == "Detector"
