@@ -18,9 +18,13 @@ client ──HTTP──▶ FastAPI (api) ──job id──▶ Redis (broker) �
 * **Workers** pull the model from S3 at start-up (`aliases/<MODEL_ALIAS>.json` → `versions/<v>/artifact.zip`),
   verify the SHA-256 from `manifest.json`, cache it in the `model-cache` volume and warm it up.
   Weights are never in git or in the docker image.
-* **Hot reload / auto-deploy**: every `MODEL_POLL_SECONDS` each worker re-reads the alias. When the
-  retraining pipeline publishes a new version and moves the alias, workers download it, load it,
-  and only then swap it in. If anything fails they keep serving the old model.
+* **Hot reload / auto-deploy**: every `MODEL_POLL_SECONDS` each worker re-reads both configured aliases
+  (`MODEL_ALIAS` and `SIMILARITY_S3_ALIAS`). When an approved alias moves, workers download the new detector
+  or Siamese model, verify its SHA-256, fully load and smoke-test it, and only then atomically swap it in.
+  If anything fails they keep serving the old model and expose the error through `/v1/model` and the
+  "Models on the workers" card on `/pipeline`. A release that failed is not downloaded again for
+  `FAILED_RELEASE_RETRY_SECONDS` (default 1 h) unless the alias moves to another release, and a similarity model that
+  cannot be loaded at start-up never stops the worker: detection keeps working and hot reload repairs it later.
 * Jobs survive worker crashes (`acks_late` + `reject_on_worker_lost`); results expire after `RESULT_TTL_SECONDS`.
 * Job lifecycle: `PENDING → STARTED → SUCCESS`, or `RETRY` (transient network/S3 errors, exponential backoff,
   up to `MAX_RETRIES`) and `FAILURE` (bad input is not retried). Uploads are kept while a retry is pending and
@@ -135,12 +139,14 @@ pytest -q
 `tests/test_e2e.py` starts a real Redis, a real Celery worker process and an S3 registry (moto
 server) with a tiny randomly initialised RT-DETRv2, then checks sync/async detection, input
 validation, upload clean-up, similarity, `/v1/model`, and **hot reload when the alias moves**.
-`tests/test_registry.py` covers alias resolution, caching, SHA-256 mismatch and zip-slip rejection.
+`tests/test_registry.py` covers alias validation, caching, SHA-256 mismatch and zip-slip rejection. The end-to-end
+suite moves both detector and similarity aliases and verifies that a broken similarity release cannot replace the
+working model.
 
 ## Known limitations
 
-* `/v1/verify` uses the Siamese ResNet18 trained on CEDAR (clean scans). Signatures cropped from real documents are a
-  different domain, so expect lower accuracy until it is trained on in-domain pairs
-  ([`docs/results/phase7_similarity_results.md`](../docs/results/phase7_similarity_results.md)).
+* Similarity quality depends on the dataset recorded in that model version's report. Clean signature pairs and
+  detector-cropped real documents can be different domains, so validate FAR/FRR on production-like crops before
+  promoting an alias ([`docs/results/phase7_similarity_results.md`](../docs/results/phase7_similarity_results.md)).
 * CPU inference. Export to ONNX / quantise if latency targets are not met.
 * `STORAGE_BACKEND=local` assumes API and workers share one host.

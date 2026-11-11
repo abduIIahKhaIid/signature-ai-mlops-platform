@@ -34,6 +34,10 @@ os.environ.update({
     "MODEL_CACHE_DIR": str(TMP / "model-cache"),
     "MODEL_POLL_SECONDS": "2",
     "SIMILARITY_PRETRAINED": "false",  # no internet for ImageNet weights in CI
+    # every test process follows a similarity alias in the moto S3, like EC2 does; unit tests that need another
+    # setting replace `settings` with dataclasses.replace(...) instead of changing this
+    "SIMILARITY_S3_ALIAS": "latest",
+    "SIMILARITY_S3_PREFIX": "signatureai/similarity",
     "TORCH_THREADS": "1",
     "AWS_ACCESS_KEY_ID": "testing",
     "AWS_SECRET_ACCESS_KEY": "testing",

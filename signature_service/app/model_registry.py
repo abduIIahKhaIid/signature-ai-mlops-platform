@@ -14,7 +14,9 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -144,8 +146,35 @@ def current_target_version() -> str | None:
     return registry.resolve_version(settings.model_alias)
 
 
-def fetch_similarity_weights(client=None) -> tuple[Path, dict]:
-    """Siamese ResNet18 weights from <bucket>/<similarity prefix>/aliases/<alias>.json, SHA-256 verified, cached."""
+def _validate_similarity_alias(alias: dict, prefix: str) -> dict:
+    """Reject malformed or unsafe aliases before they can influence a worker download/hot swap."""
+    if not isinstance(alias, dict):
+        raise RuntimeError("similarity alias must be a JSON object")
+    version = alias.get("version")
+    if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", version):
+        raise RuntimeError("similarity alias has an invalid version")
+    expected_key = f"{prefix}/versions/{version}/siamese_resnet18.pt"
+    if alias.get("weights_key") != expected_key:
+        raise RuntimeError("similarity alias weights_key does not match its version")
+    sha = alias.get("sha256")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+        raise RuntimeError("similarity alias has an invalid SHA-256")
+    threshold = alias.get("recommended_threshold")
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        raise RuntimeError("similarity alias has no numeric recommended_threshold")
+    if not math.isfinite(float(threshold)) or not 0.0 <= float(threshold) <= 1.0:
+        raise RuntimeError("similarity alias recommended_threshold must be between 0 and 1")
+    return alias
+
+
+def current_similarity_target(client=None) -> dict | None:
+    """Return the validated S3 alias followed by similarity workers, or None when disabled."""
+    if not settings.enable_similarity or not settings.similarity_s3_alias:
+        return None
+    if settings.similarity_s3_alias not in {"latest", "production"}:
+        raise ValueError("SIMILARITY_S3_ALIAS must be 'latest' or 'production'")
+    if not settings.model_s3_bucket:
+        raise RuntimeError("SIMILARITY_S3_ALIAS requires MODEL_S3_BUCKET")
     if client is None:
         import boto3
 
@@ -153,6 +182,19 @@ def fetch_similarity_weights(client=None) -> tuple[Path, dict]:
     prefix = settings.similarity_s3_prefix.strip("/")
     alias = json.loads(client.get_object(Bucket=settings.model_s3_bucket,
                                          Key=f"{prefix}/aliases/{settings.similarity_s3_alias}.json")["Body"].read())
+    return _validate_similarity_alias(alias, prefix)
+
+
+def fetch_similarity_weights(client=None, alias: dict | None = None) -> tuple[Path, dict]:
+    """Fetch one validated Siamese alias version, SHA-256 verify it, and reuse its versioned cache."""
+    if client is None:
+        import boto3
+
+        client = boto3.client("s3")
+    prefix = settings.similarity_s3_prefix.strip("/")
+    alias = _validate_similarity_alias(alias, prefix) if alias is not None else current_similarity_target(client)
+    if alias is None:
+        raise RuntimeError("SIMILARITY_S3_ALIAS is not configured")
     target = Path(settings.model_cache_dir) / "similarity" / alias["version"] / "siamese_resnet18.pt"
     with _file_lock(Path(settings.model_cache_dir) / f".similarity-{alias['version']}.lock"):
         if not (target.exists() and _sha256(target) == alias["sha256"]):

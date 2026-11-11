@@ -785,6 +785,42 @@ function CleaningCard({ run }: { run: Run | null }) {
   );
 }
 
+/** What the inference workers serve right now: detector and similarity model, with any hot-reload error. */
+function ServingModelsCard({ state }: { state: PipelineState }) {
+  const sv = state.serving;
+  if (!sv) return null;
+  const w = sv.worker;
+  const label = (v?: string | null) => (v ? versionDate(v) ?? v : "—");
+  const simName = w?.similarity_model === "resnet18-finetuned" ? "Siamese ResNet18" : w?.similarity_model ?? null;
+  const rows: { name: string; value: React.ReactNode; detail?: string; error?: string | null }[] = [
+    { name: "Detector", value: label(w?.detector_version), detail: "RT-DETRv2", error: w?.last_detector_reload_error },
+    {
+      name: "Similarity",
+      value: w?.similarity_version ? label(w.similarity_version) : simName ? "built-in weights" : "not loaded",
+      detail: simName ? `${simName}${w?.similarity_threshold != null ? `, match line ${(w.similarity_threshold * 100).toFixed(1)}%` : ""}` : undefined,
+      error: w?.last_similarity_reload_error,
+    },
+  ];
+  return (
+    <Section title="Models on the workers" id="serving" aside={sv.checked_at ? `checked ${ago(sv.checked_at)}` : undefined}>
+      {sv.worker_error && !w ? (
+        <p className="rounded-lg bg-fault-soft px-3 py-2 text-[14px] text-fault">No worker answered: {sv.worker_error}</p>
+      ) : (
+        <dl className="grid gap-2">
+          {rows.map((r) => (
+            <div key={r.name} className={`rounded-lg p-3 ${r.error ? "bg-fault-soft" : "bg-desk/60"}`}>
+              <dt className="text-[13px] text-ink-faint">{r.name}{r.detail ? ` · ${r.detail}` : ""}</dt>
+              <dd className="break-all font-bold" title={typeof r.value === "string" ? r.value : undefined}>{r.value}</dd>
+              {r.error && <dd className="mt-1 break-words text-[12.5px] text-fault [overflow-wrap:anywhere]">Hot reload problem: {r.error}</dd>}
+            </div>
+          ))}
+        </dl>
+      )}
+      <p className="mt-2 text-[12.5px] text-ink-faint">Workers re-check both S3 aliases every {secs(w?.hot_reload_poll_seconds ?? state.config.model_poll_seconds ?? 300)}; a release that fails to load is never swapped in.</p>
+    </Section>
+  );
+}
+
 function LineageCard({ state }: { state: PipelineState }) {
   const lin = state.lineage;
   if (!lin) return null;
@@ -1335,6 +1371,7 @@ export default function PipelinePage() {
             <Steps phases={state.phases} run={run} eta={state.eta} />
           </section>
           <LineageCard state={state} />
+          <ServingModelsCard state={state} />
           <TrainingSettingsCard state={state} admin={admin} />
           <AlertsCard state={state} admin={admin} />
           <RollbackCard state={state} admin={admin} />

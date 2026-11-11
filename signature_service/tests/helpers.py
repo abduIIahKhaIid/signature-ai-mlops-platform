@@ -48,6 +48,30 @@ def publish_version(s3, bucket: str, prefix: str, version: str, work: Path, *, a
                       Body=json.dumps({"version": version, "artifact_key": f"{base}/artifact.zip", "sha256": sha}))
 
 
+def publish_similarity_version(s3, bucket: str, prefix: str, version: str, work: Path, *,
+                               alias: str = "latest", threshold: float = 0.8, seed: int = 0,
+                               tamper: bool = False) -> None:
+    """Publish an API-compatible ResNet18 state dict and validated serving alias."""
+    import torch
+    import torchvision
+
+    torch.manual_seed(seed)
+    model = torchvision.models.resnet18(weights=None)
+    model.fc = torch.nn.Identity()
+    weights = work / f"{version}-siamese_resnet18.pt"
+    weights.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), weights)
+    sha = hashlib.sha256(weights.read_bytes()).hexdigest()
+    key = f"{prefix}/versions/{version}/siamese_resnet18.pt"
+    s3.upload_file(str(weights), bucket, key)
+    s3.put_object(Bucket=bucket, Key=f"{prefix}/aliases/{alias}.json", Body=json.dumps({
+        "version": version,
+        "weights_key": key,
+        "sha256": "0" * 64 if tamper else sha,
+        "recommended_threshold": threshold,
+    }))
+
+
 def document_png(seed: int = 0, size=(900, 600)) -> bytes:
     """Synthetic 'document' with printed lines and a scribbled signature."""
     rng = random.Random(seed)

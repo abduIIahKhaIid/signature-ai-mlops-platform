@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import E2E_BUCKET, E2E_PREFIX, MOTO_PORT, REDIS_PORT, ROOT, TMP
-from tests.helpers import document_png, publish_version
+from tests.helpers import document_png, publish_similarity_version, publish_version
 
 # Locally a missing redis-server only skips these tests. In CI (CI=true) it must not: a silent skip would hide that
 # the end-to-end tests did not run at all, so there the stack fixture fails loudly instead.
@@ -33,6 +33,8 @@ def stack():
     s3 = boto3.client("s3", endpoint_url=f"http://127.0.0.1:{MOTO_PORT}", region_name="us-east-1")
     s3.create_bucket(Bucket=E2E_BUCKET)
     publish_version(s3, E2E_BUCKET, E2E_PREFIX, "v1", TMP / "publish", seed=1)
+    publish_similarity_version(s3, E2E_BUCKET, "signatureai/similarity", "s1", TMP / "publish",
+                               threshold=0.81, seed=1)
 
     worker_env = {**os.environ, "AWS_ENDPOINT_URL": f"http://127.0.0.1:{MOTO_PORT}"}
     log_path = TMP / "worker.log"
@@ -150,6 +152,8 @@ def test_model_info_has_cold_start(stack):
     assert r.status_code == 200
     info = r.json()["result"]
     assert info["detector_version"] == "v1"
+    assert info["similarity_version"] == "s1"
+    assert info["similarity_threshold"] == pytest.approx(0.81)
     assert info["cold_start_seconds"] > 0
 
 
@@ -216,3 +220,51 @@ def test_hot_reload_when_alias_moves(stack):
     assert version == "v2", stack["log"].read_text()[-3000:]
     r = client.post("/v1/detect?wait=true", files={"file": _png()})
     assert r.json()["result"]["model_version"] == "v2"
+
+
+def test_similarity_hot_reload_when_alias_moves(stack):
+    """A validated Siamese alias version is loaded and atomically replaces the old embedder."""
+    client = stack["client"]
+    publish_similarity_version(stack["s3"], E2E_BUCKET, "signatureai/similarity", "s2", TMP / "publish",
+                               threshold=0.91, seed=2)
+    deadline = time.time() + 60
+    info = None
+    while time.time() < deadline:
+        info = client.get("/v1/model").json()["result"]
+        if info["similarity_version"] == "s2":
+            break
+        time.sleep(1)
+    assert info["similarity_version"] == "s2", stack["log"].read_text()[-3000:]
+    assert info["similarity_threshold"] == pytest.approx(0.91)
+    assert info["last_similarity_reload_error"] is None
+    result = client.post("/v1/verify?wait=true", files={"reference": _png(3), "candidate": _png(3)}).json()["result"]
+    assert result["similarity_version"] == "s2"
+    assert result["threshold"] == pytest.approx(0.91)
+
+
+def _wait_for_model_info(client, predicate, seconds):
+    deadline, info = time.time() + seconds, None
+    while time.time() < deadline:
+        info = client.get("/v1/model").json()["result"]
+        if predicate(info):
+            break
+        time.sleep(1)
+    return info
+
+
+def test_broken_similarity_alias_keeps_serving_previous_model(stack):
+    """Self-contained: it first publishes and waits for its own good release, so test order does not matter."""
+    client, s3 = stack["client"], stack["s3"]
+    publish_similarity_version(s3, E2E_BUCKET, "signatureai/similarity", "s-good", TMP / "publish", threshold=0.88, seed=4)
+    info = _wait_for_model_info(client, lambda i: i["similarity_version"] == "s-good", 60)
+    assert info["similarity_version"] == "s-good", stack["log"].read_text()[-3000:]
+
+    publish_similarity_version(s3, E2E_BUCKET, "signatureai/similarity", "s-broken", TMP / "publish",
+                               threshold=0.92, seed=3, tamper=True)
+    info = _wait_for_model_info(client, lambda i: i["last_similarity_reload_error"], 30)
+    assert "SHA-256" in (info["last_similarity_reload_error"] or ""), stack["log"].read_text()[-3000:]
+    assert info["similarity_version"] == "s-good"                     # the working model keeps serving
+    assert info["similarity_threshold"] == pytest.approx(0.88)
+    # the broken release is not downloaded again on every poll (MODEL_POLL_SECONDS=2 in tests)
+    info = _wait_for_model_info(client, lambda i: "not downloaded again" in (i["last_similarity_reload_error"] or ""), 20)
+    assert "not downloaded again" in info["last_similarity_reload_error"]
