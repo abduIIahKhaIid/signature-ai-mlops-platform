@@ -65,6 +65,8 @@ class Settings:
     enable_similarity: bool = field(default_factory=lambda: _bool("ENABLE_SIMILARITY", True))
     similarity_pretrained: bool = field(default_factory=lambda: _bool("SIMILARITY_PRETRAINED", True))
     similarity_weights_path: str | None = field(default_factory=lambda: os.getenv("SIMILARITY_WEIGHTS_PATH"))
+    # /v1/detect: with 2+ signatures on a page, compare every pair of the top N crops with the similarity model
+    compare_max_signatures: int = field(default_factory=lambda: _int("COMPARE_MAX_SIGNATURES", 10))
     similarity_match_threshold: float = field(default_factory=lambda: _float("SIMILARITY_MATCH_THRESHOLD", 0.80))
     # Siamese weights from S3 (written by notebooks/02_similarity_siamese_kaggle.ipynb): alias "latest" -> versions/<v>/siamese_resnet18.pt.
     # When set, the alias' validated threshold replaces SIMILARITY_MATCH_THRESHOLD.

@@ -149,10 +149,41 @@ def _cleanup(task, keys: list[str], exc: Exception | None = None) -> None:
         get_storage().delete(key)
 
 
+def pairwise_similarity(image, detections: list[dict], embedder) -> dict:
+    """Compare every pair of detected signatures on one page with the similarity model (Siamese ResNet18).
+
+    The top COMPARE_MAX_SIGNATURES boxes (detections are sorted by score) are cropped with the same 5 % margin the
+    verify endpoint uses, embedded in one batch, and compared by cosine similarity. Pair indexes a/b point into
+    `detections`, so the browser can hide pairs whose boxes fall under its confidence slider.
+    """
+    if embedder is None:
+        return {"available": False, "reason": "similarity is disabled on this worker (ENABLE_SIMILARITY=false)"}
+    from .inference import crop_with_margin
+
+    top = detections[: max(2, settings.compare_max_signatures)]
+    t0 = time.perf_counter()
+    with observability.span("pairwise_similarity", signatures=len(top)):
+        vectors = embedder.embed_many([crop_with_margin(image, d["box_xyxy"]) for d in top])
+        scores = (vectors @ vectors.T).tolist()
+    threshold = embedder.threshold if embedder.threshold is not None else settings.similarity_match_threshold
+    pairs = [{"a": a, "b": b, "similarity": round(scores[a][b], 4), "score_percent": round(max(0.0, scores[a][b]) * 100, 1),
+              "match": scores[a][b] >= threshold}
+             for a in range(len(top)) for b in range(a + 1, len(top))]
+    pairs.sort(key=lambda p: p["similarity"], reverse=True)
+    return {
+        "available": True, "model": embedder.name, "version": embedder.version, "threshold": threshold,
+        "compared": len(top), "detected": len(detections), "pairs": pairs,
+        "ms": round((time.perf_counter() - t0) * 1000, 1),
+        "note": ("Siamese ResNet18; threshold validated on held-out writers (CEDAR)." if embedder.version
+                 else "Baseline score; threshold is not calibrated for forgery detection."),
+    }
+
+
 @celery_app.task(name=DETECT_TASK, **RETRY_OPTIONS)
 def detect_signature(self, image_key: str, threshold: float | None = None,
-                     enqueued_at: float | None = None, simulate_failures: int = 0) -> dict:
+                     enqueued_at: float | None = None, simulate_failures: int = 0, compare: bool = True) -> dict:
     started = time.perf_counter()
+    similarity = None
     try:
         queue_wait_ms = _start(self, enqueued_at, simulate_failures)
         models.ensure_loaded()
@@ -167,6 +198,8 @@ def detect_signature(self, image_key: str, threshold: float | None = None,
             inference_ms = (time.perf_counter() - t0) * 1000
             observability.log_info("detect done", inference_ms=round(inference_ms, 1), detections=len(detections),
                                    queue_wait_ms=queue_wait_ms if queue_wait_ms is not None else -1)
+            if compare and len(detections) >= 2:
+                similarity = pairwise_similarity(image, detections, models.embedder)
     except Exception as exc:
         _cleanup(self, [image_key], exc)
         raise
@@ -179,8 +212,9 @@ def detect_signature(self, image_key: str, threshold: float | None = None,
         "image_size": {"width": image.width, "height": image.height},
         "signature_count": len(detections),
         "detections": detections,
+        "similarity": similarity,   # None unless compare and 2+ signatures; see pairwise_similarity
         "timings_ms": {"queue_wait": queue_wait_ms, "inference": round(inference_ms, 1),
-                       "total_worker": round(total_ms, 1)},
+                       "similarity": similarity.get("ms") if similarity else None, "total_worker": round(total_ms, 1)},
         "retries": self.request.retries,
         "worker_pid": os.getpid(),
     }
