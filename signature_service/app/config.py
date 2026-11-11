@@ -65,6 +65,10 @@ class Settings:
     enable_similarity: bool = field(default_factory=lambda: _bool("ENABLE_SIMILARITY", True))
     similarity_pretrained: bool = field(default_factory=lambda: _bool("SIMILARITY_PRETRAINED", True))
     similarity_weights_path: str | None = field(default_factory=lambda: os.getenv("SIMILARITY_WEIGHTS_PATH"))
+    # A model release (detector version, or similarity version + SHA-256) that failed to download/verify/load is not
+    # tried again for this long, so a broken alias does not re-download ~45-80 MB every MODEL_POLL_SECONDS.
+    # Moving the alias to another release is tried at once.
+    failed_release_retry_seconds: int = field(default_factory=lambda: _int("FAILED_RELEASE_RETRY_SECONDS", 3600))
     # /v1/detect: with 2+ signatures on a page, compare every pair of the top N crops with the similarity model
     compare_max_signatures: int = field(default_factory=lambda: _int("COMPARE_MAX_SIGNATURES", 10))
     similarity_match_threshold: float = field(default_factory=lambda: _float("SIMILARITY_MATCH_THRESHOLD", 0.80))

@@ -184,7 +184,12 @@ export interface PipelineState {
   runs: RunSummary[];
   decisions: Decision[];
   triggers?: TriggerRecord[];
-  serving: { worker?: { detector_version?: string }; worker_error?: string; alias?: { version?: string; previous_version?: string; stage?: string }; alias_name?: string; checked_at?: string } | null;
+  serving: {
+    worker?: {
+      detector_version?: string; similarity_model?: string | null; similarity_version?: string | null; similarity_threshold?: number | null;
+      last_detector_reload_error?: string | null; last_similarity_reload_error?: string | null; hot_reload_poll_seconds?: number;
+    };
+    worker_error?: string; alias?: { version?: string; previous_version?: string; stage?: string }; alias_name?: string; checked_at?: string } | null;
   last_check: { ts: string; source: string; commit: string; zips: { path: string }[]; url: string } | null;
   pending_recheck: boolean;
 }

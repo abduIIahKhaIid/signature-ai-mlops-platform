@@ -81,6 +81,8 @@ export interface ModelInfo {
   worker_uptime_seconds: number;
   hot_reload_poll_seconds: number;
   last_reload_error: string | null;
+  last_detector_reload_error: string | null;
+  last_similarity_reload_error: string | null;
   worker_pid: number;
 }
 

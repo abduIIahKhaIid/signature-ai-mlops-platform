@@ -47,7 +47,8 @@ def test_only_the_top_signatures_are_compared(monkeypatch):
     assert out["compared"] == 2 and out["detected"] == 3 and [(p["a"], p["b"]) for p in out["pairs"]] == [(0, 1)]
 
 
-def test_without_a_similarity_model():
+def test_without_a_similarity_model(monkeypatch):
+    monkeypatch.setattr(tasks, "settings", dataclasses.replace(settings, enable_similarity=False))
     out = pairwise_similarity(_page(), DETECTIONS, None)
     assert out == {"available": False, "reason": "similarity is disabled on this worker (ENABLE_SIMILARITY=false)"}
 

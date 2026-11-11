@@ -5,7 +5,7 @@ import pytest
 from moto import mock_aws
 
 from app.model_registry import S3ModelRegistry, _safe_extract
-from tests.helpers import publish_version
+from tests.helpers import publish_similarity_version, publish_version
 
 BUCKET, PREFIX = "models", "signatureai/detection"
 
@@ -66,31 +66,41 @@ def test_zip_slip_rejected(tmp_path):
 
 def test_similarity_weights_from_s3_alias(s3, tmp_path, monkeypatch):
     import dataclasses
-    import hashlib
-    import json
-
-    import torch
-    import torchvision
 
     import app.model_registry as reg
     from app.inference import SignatureEmbedder
 
-    net = torchvision.models.resnet18(weights=None)
-    net.fc = torch.nn.Identity()
-    weights = tmp_path / "siamese_resnet18.pt"
-    torch.save(net.state_dict(), weights)
-    sha = hashlib.sha256(weights.read_bytes()).hexdigest()
-    s3.upload_file(str(weights), BUCKET, "signatureai/similarity/versions/s1/siamese_resnet18.pt")
-    s3.put_object(Bucket=BUCKET, Key="signatureai/similarity/aliases/latest.json", Body=json.dumps(
-        {"version": "s1", "weights_key": "signatureai/similarity/versions/s1/siamese_resnet18.pt",
-         "sha256": sha, "recommended_threshold": 0.71}))
+    publish_similarity_version(s3, BUCKET, "signatureai/similarity", "s1", tmp_path, threshold=0.71)
     monkeypatch.setattr(reg, "settings", dataclasses.replace(
         reg.settings, model_s3_bucket=BUCKET, similarity_s3_alias="latest", model_cache_dir=str(tmp_path / "cache")))
+    assert reg.current_similarity_target(client=s3)["version"] == "s1"
     path, meta = reg.fetch_similarity_weights(client=s3)
     assert meta["recommended_threshold"] == 0.71 and path.exists()
     assert SignatureEmbedder(False, str(path)).name == "resnet18-finetuned"
-    # tampered alias -> refused
-    s3.put_object(Bucket=BUCKET, Key="signatureai/similarity/aliases/latest.json", Body=json.dumps(
-        {"version": "s2", "weights_key": "signatureai/similarity/versions/s1/siamese_resnet18.pt", "sha256": "0" * 64}))
+    # tampered weights checksum -> refused before the working model can be replaced
+    publish_similarity_version(s3, BUCKET, "signatureai/similarity", "s2", tmp_path,
+                               threshold=0.72, tamper=True)
     with pytest.raises(RuntimeError, match="SHA-256"):
         reg.fetch_similarity_weights(client=s3)
+
+
+def test_similarity_alias_rejects_unsafe_metadata(s3, tmp_path, monkeypatch):
+    import dataclasses
+    import json
+
+    import app.model_registry as reg
+
+    monkeypatch.setattr(reg, "settings", dataclasses.replace(
+        reg.settings, model_s3_bucket=BUCKET, similarity_s3_alias="latest", model_cache_dir=str(tmp_path / "cache")))
+    base = {"version": "s1", "weights_key": "signatureai/similarity/versions/s1/siamese_resnet18.pt",
+            "sha256": "a" * 64, "recommended_threshold": 0.7}
+    for changed, message in [
+        ({"version": "../s1"}, "invalid version"),
+        ({"weights_key": "somewhere/else.pt"}, "weights_key"),
+        ({"sha256": "short"}, "SHA-256"),
+        ({"recommended_threshold": 1.5}, "between 0 and 1"),
+    ]:
+        alias = {**base, **changed}
+        s3.put_object(Bucket=BUCKET, Key="signatureai/similarity/aliases/latest.json", Body=json.dumps(alias))
+        with pytest.raises(RuntimeError, match=message):
+            reg.current_similarity_target(client=s3)
