@@ -161,6 +161,12 @@ export const TRIGGER_SOURCE: Record<string, string> = {
   webhook: "HF webhook", manual: "Dashboard", pending: "Re-check after run", schedule: "Scheduled check",
 };
 
+/** What the dashboard shows of an S3 alias (candidate "latest" or served "production"). */
+export interface AliasSummary {
+  version?: string | null; stage?: string | null; previous_version?: string | null; updated_at?: string | null; error?: string;
+  gate?: { passed: boolean; override: boolean; by?: string | null; reason?: string | null; version?: string | null } | null;
+}
+
 export interface PipelineState {
   server_time: string;
   phases: PhaseDef[];
@@ -189,7 +195,9 @@ export interface PipelineState {
       detector_version?: string; similarity_model?: string | null; similarity_version?: string | null; similarity_threshold?: number | null;
       last_detector_reload_error?: string | null; last_similarity_reload_error?: string | null; hot_reload_poll_seconds?: number;
     };
-    worker_error?: string; alias?: { version?: string; previous_version?: string; stage?: string }; alias_name?: string; checked_at?: string } | null;
+    worker_error?: string;
+    aliases?: Record<"detection" | "similarity", { production?: AliasSummary | null; latest?: AliasSummary | null }>;
+    following?: { detection?: string | null; similarity?: string | null }; alias?: { version?: string; previous_version?: string; stage?: string }; alias_name?: string; checked_at?: string } | null;
   last_check: { ts: string; source: string; commit: string; zips: { path: string }[]; url: string } | null;
   pending_recheck: boolean;
 }

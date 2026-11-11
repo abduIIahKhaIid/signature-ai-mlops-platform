@@ -9,6 +9,7 @@
 | [`cicd_github_secrets.md`](setup/cicd_github_secrets.md) | Every push to `main` deploys to EC2: GitHub secrets, SSM, IAM, troubleshooting |
 | [`deploy_ec2.md`](setup/deploy_ec2.md) | Create the EC2 server from zero (IAM role, instance, user data) |
 | [`retraining_pipeline.md`](setup/retraining_pipeline.md) | Continuous training: HF webhook → EC2 pipeline worker → Kaggle GPU → gate → S3 → hot reload |
+| [`model_promotion.md`](setup/model_promotion.md) | Candidate (`latest`) vs served (`production`): gate records, Promote, switching a server to `production` |
 
 ## results/ — measured results
 | File | What |

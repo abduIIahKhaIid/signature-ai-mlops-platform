@@ -30,10 +30,10 @@ REQUIRED_SECRETS = ["COMET_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY
 MODES = {
     # quick end-to-end proof: warm start from the served model, small subset, 1 epoch (~30-40 min incl. data prep)
     "smoke": dict(EPOCHS=1, MAX_TRAIN_IMAGES=2000, MAX_VAL_IMAGES=500, CALIB_MAX_IMAGES=500,
-                  EARLY_STOPPING_MIN_EPOCHS=1, EARLY_STOPPING_PATIENCE=1, INIT_FROM="latest"),
+                  EARLY_STOPPING_MIN_EPOCHS=1, EARLY_STOPPING_PATIENCE=1),
     # real retrain on the full updated dataset
     "full": dict(EPOCHS=8, MAX_TRAIN_IMAGES=None, MAX_VAL_IMAGES=None, CALIB_MAX_IMAGES=1500,
-                 EARLY_STOPPING_MIN_EPOCHS=2, EARLY_STOPPING_PATIENCE=2, INIT_FROM="latest"),
+                 EARLY_STOPPING_MIN_EPOCHS=2, EARLY_STOPPING_PATIENCE=2),
 }
 
 
@@ -91,6 +91,8 @@ def overrides_cell(a) -> str:
         BATCH_SIZE=8, GRAD_ACCUM=1, NUM_WORKERS=4, USE_COMET=True, UPLOAD_TO_S3=True,
         S3_UPDATE_LATEST_ALIAS=False, PROMOTE_TO_PRODUCTION=False, RELOAD_FROM_S3=False, SAVE_TO_DRIVE=False,
         AUTO_DEPLOY=not a.no_deploy, DEPLOY_ALIAS=a.deploy_alias,
+        # warm start from (and compare against) the model the workers serve, never from an unreviewed candidate
+        INIT_FROM=a.deploy_alias,
         GATE_MIN_TEST_MAP50=a.gate_floor, GATE_MAX_REGRESSION=a.gate_max_regression,
         GATE_MAX_VAL_TEST_GAP=getattr(a, "gate_max_val_test_gap", 0.05),
         GITHUB_RUN_URL=a.github_run_url,

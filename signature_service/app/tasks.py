@@ -73,12 +73,28 @@ class ModelHolder:
         import torch
 
         from .inference import SignatureDetector, SignatureEmbedder
-        from .model_registry import resolve_current_model
+        from .model_registry import last_served_detector, remember_serving_detector, resolve_current_model
+        from .promotion import UnapprovedRelease
 
         torch.set_num_threads(settings.torch_threads)
         started = time.perf_counter()
         with observability.span("load_models"):
-            self.detector = SignatureDetector(resolve_current_model())
+            try:
+                resolved = resolve_current_model()
+                approved = True
+            except UnapprovedRelease as exc:
+                # The serving alias points to an unapproved release. Serve the last approved detector of this host
+                # instead of failing (no detector = no service at all); without one, start-up has to fail.
+                fallback = last_served_detector()
+                if fallback is None:
+                    raise
+                resolved, approved = fallback, False
+                self.last_detector_reload_error = f"start-up: {exc}; serving the last approved detector {fallback.version}"
+                self.last_reload_error = f"detector: {self.last_detector_reload_error}"
+                log.error("detector alias refused at start-up (%s); serving last approved %s", exc, fallback.version)
+            self.detector = SignatureDetector(resolved)
+            if approved and settings.model_source == "s3" and not settings.model_version:
+                remember_serving_detector(self.detector.version)
             self.embedder = self._load_similarity_safely(SignatureEmbedder)
         self.cold_start_seconds = round(time.perf_counter() - started, 3)
         log.info("models ready in %.2fs (detector=%s similarity=%s)", self.cold_start_seconds,
@@ -177,6 +193,9 @@ class ModelHolder:
                 raise
             with self._swap_lock:
                 self.detector = new_detector
+            from .model_registry import remember_serving_detector
+
+            remember_serving_detector(target)
             log.info("detector hot reload complete: now serving %s", target)
 
     def _reload_similarity_if_needed(self) -> None:

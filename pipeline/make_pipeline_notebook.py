@@ -555,7 +555,15 @@ if GATE_PASSED and AUTO_DEPLOY:
               'stage': 'pipeline_approved', 'previous_version': baseline_version,
               'test_map50': candidate_map50, 'recommended_threshold': RECOMMENDED_THRESHOLD,
               'approved_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              'github_run': GITHUB_RUN_URL}
+              'github_run': GITHUB_RUN_URL,
+              # gate record for THIS version: workers that follow 'production' refuse an alias without one
+              # (signature_service/app/promotion.py), so only a gate or an admin can make a model live
+              'gate': {'version': RUN_VERSION, 'passed': True, 'checked_by': 'pipeline validation gate (Kaggle)',
+                       'checked_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                       'pipeline_run_id': PIPELINE_RUN_ID, 'reasons': [],
+                       'metrics': {'test_map50': candidate_map50, 'baseline_version': baseline_version,
+                                   'baseline_test_map50': baseline_map50, 'val_test_gap': val_test_gap,
+                                   'floor': GATE_MIN_TEST_MAP50, 'max_regression': GATE_MAX_REGRESSION}}}
     s3.put_object(Bucket=S3_BUCKET, Key=f'{_prefix}/aliases/{DEPLOY_ALIAS}.json',
                   Body=json.dumps(_alias, indent=2).encode(), ContentType='application/json',
                   ServerSideEncryption='AES256')
