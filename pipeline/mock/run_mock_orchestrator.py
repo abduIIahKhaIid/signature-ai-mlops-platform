@@ -14,6 +14,9 @@ Scenario:  1) webhook with an empty repo  -> "no dataset"
 Screenshots of the dashboard are saved at each step.
 
 Usage: python pipeline/mock/run_mock_orchestrator.py <repo_root> <screenshot_dir>
+       MOCK_HEADLESS=1 python pipeline/mock/run_mock_orchestrator.py <repo_root> <out_dir>   # CI: no browser,
+       no screenshots; "Stop" goes through the API instead of the dashboard button. Same scenario, same checks.
+Exits non-zero when any step of the scenario does not end as expected.
 """
 from __future__ import annotations
 
@@ -224,7 +227,8 @@ threading.Thread(target=server.run, daemon=True).start()
 time.sleep(2)
 
 import httpx  # noqa: E402
-from playwright.sync_api import sync_playwright  # noqa: E402
+
+HEADLESS = os.environ.get("MOCK_HEADLESS") == "1"
 
 api = httpx.Client(base_url=f"http://127.0.0.1:{API_PORT}", timeout=30)
 
@@ -250,13 +254,27 @@ def wait_for(pred, timeout=900, every=2.0, label=""):
     raise TimeoutError(label)
 
 
-pw = sync_playwright().start()
-browser = pw.chromium.launch(executable_path=shutil.which("google-chrome"), args=["--no-sandbox"])
-page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
-page.goto(f"http://127.0.0.1:{API_PORT}/pipeline")
+class _NoBrowser:
+    """Headless (CI) stand-in for Playwright: every page/browser call is accepted and does nothing."""
+
+    def __getattr__(self, _name):
+        return lambda *a, **k: self
+
+
+if HEADLESS:
+    pw = browser = page = _NoBrowser()
+else:
+    from playwright.sync_api import sync_playwright
+
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(executable_path=shutil.which("google-chrome"), args=["--no-sandbox"])
+    page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
+    page.goto(f"http://127.0.0.1:{API_PORT}/pipeline")
 
 
 def shot(name: str, full=True):
+    if HEADLESS:
+        return
     page.wait_for_timeout(3500)  # one dashboard refresh
     page.screenshot(path=str(SHOTS / f"{name}.png"), full_page=full)
     print("screenshot", name)
@@ -280,6 +298,8 @@ try:
     s = wait_for(lambda s: s["run"] and s["run"]["status"] not in ("running", "deploying"), 900, 3, "run1 end")
     run1 = s["run"]
     timeline.append(("upload A", run1["status"], f"{run1['result']['version']} served_after={run1['served_after']}"))
+    assert run1["result"]["status"] == "deployed", f"run 1 should deploy, got {run1['result']['status']}"
+    assert run1["served_after"] == run1["result"]["version"], "workers did not hot-reload the new model"
     page.evaluate("window.scrollTo(0,0)")
     shot("03_run1_deployed")
 
@@ -303,11 +323,16 @@ try:
     run2_id = s["run"]["id"]
     page.evaluate("window.scrollTo(0,0)")
     page.wait_for_timeout(3500)
-    page.get_by_role("button", name="Stop training").click()
-    page.wait_for_timeout(400)
-    page.screenshot(path=str(SHOTS / "06_stop_dialog.png"), full_page=False)
-    page.fill("#admin-token", "admin")
-    page.get_by_role("button", name="Stop run").click()
+    if HEADLESS:
+        r = api.post("/v1/pipeline/stop", params={"run_id": run2_id}, headers={"X-Admin-Token": "admin"})
+        print("stop ->", r.status_code, r.json())
+        assert r.status_code == 202, r.text
+    else:
+        page.get_by_role("button", name="Stop training").click()
+        page.wait_for_timeout(400)
+        page.screenshot(path=str(SHOTS / "06_stop_dialog.png"), full_page=False)
+        page.fill("#admin-token", "admin")
+        page.get_by_role("button", name="Stop run").click()
     s = wait_for(lambda s: s["run"] and s["run"]["id"] == run2_id and s["run"]["status"] not in ("running", "deploying"),
                  600, 2, "run2 stop")
     assert s["run"]["status"] == "stopped", s["run"]["status"]
@@ -324,6 +349,8 @@ try:
                  900, 3, "run3 end")
     run3 = s["run"]
     timeline.append(("upload B (strict gate)", run3["status"], "; ".join(run3["result"]["gate"]["reasons"])))
+    assert run3["result"]["status"] == "rejected" and run3["result"]["gate"]["reasons"], "strict gate should reject run 3"
+    assert s["serving"]["alias"]["version"] == run1["result"]["version"], "a rejected model must not move the alias"
     page.evaluate("window.scrollTo(0,0)")
     shot("05_run3_rejected")
 
@@ -340,6 +367,7 @@ try:
     print("rollback ->", r.status_code, r.json())
     after = json.loads(s3.get_object(Bucket=BUCKET, Key=f"{PREFIX}/aliases/latest.json")["Body"].read())
     timeline.append(("roll back", r.status_code, f"{before} -> {after['version']} (stage {after.get('stage')})"))
+    assert r.status_code == 200 and after["version"] == "v20261109T142002Z-8a4d7444", "rollback did not restore the old model"
     page.evaluate("window.scrollTo(0,0)")
     shot("09_after_rollback")
     final = state()

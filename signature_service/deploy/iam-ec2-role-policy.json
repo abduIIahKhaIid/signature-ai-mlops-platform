@@ -38,6 +38,28 @@
                 "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/aliases/*",
                 "arn:aws:s3:::signatureai-df-detr-models/signatureai/detection/pipeline_runs/control/*"
             ]
+        },
+        {
+            "Sid": "EcrLogin",
+            "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Sid": "EcrPullServiceImages",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchCheckLayerAvailability"
+            ],
+            "Resource": "arn:aws:ecr:ap-southeast-2:433306738386:repository/signatureai"
+        },
+        {
+            "Sid": "ReadProductionDotenv",
+            "Effect": "Allow",
+            "Action": "secretsmanager:GetSecretValue",
+            "Resource": "arn:aws:secretsmanager:ap-southeast-2:433306738386:secret:signatureai/prod/dotenv-*"
         }
     ]
 }
