@@ -1,6 +1,10 @@
 # Single-host deployment (laptop or one EC2 instance):
 #   docker compose up -d --build              # api + inference worker + pipeline orchestrator + redis
 #   docker compose up -d --scale worker=3     # more inference capacity
+#
+# Image names: ${ECR_IMAGE}:<service>-${IMAGE_TAG}. deploy/remote_deploy.sh writes both into .env.
+#   On EC2 with ECR: CI pushed <account>.dkr.ecr.<region>.amazonaws.com/signatureai:api-<sha> (etc.) and the
+#   instance only pulls them. Locally (nothing set): signatureai:api-local, built from the Dockerfiles below.
 services:
   redis:
     image: redis:7-alpine
@@ -14,6 +18,7 @@ services:
     restart: unless-stopped
 
   api:
+    image: ${ECR_IMAGE:-signatureai}:api-${IMAGE_TAG:-local}
     build: {context: ., dockerfile: docker/api.Dockerfile}
     env_file: .env
     environment:
@@ -26,6 +31,7 @@ services:
     restart: unless-stopped
 
   worker:
+    image: ${ECR_IMAGE:-signatureai}:worker-${IMAGE_TAG:-local}
     build: {context: ., dockerfile: docker/worker.Dockerfile}
     env_file: .env
     environment:
@@ -41,6 +47,7 @@ services:
   # Retraining orchestrator: HF webhook/schedule -> dataset check + dedup -> Kaggle GPU -> live dashboard (/pipeline).
   # No torch, no model, ~150 MB RAM. Exactly ONE replica (it also runs the beat scheduler).
   pipeline:
+    image: ${ECR_IMAGE:-signatureai}:pipeline-${IMAGE_TAG:-local}
     build: {context: .., dockerfile: signature_service/docker/pipeline.Dockerfile}
     env_file: .env
     environment:

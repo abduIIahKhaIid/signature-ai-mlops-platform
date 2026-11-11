@@ -16,7 +16,10 @@ from fastapi.testclient import TestClient
 from tests.conftest import E2E_BUCKET, E2E_PREFIX, MOTO_PORT, REDIS_PORT, ROOT, TMP
 from tests.helpers import document_png, publish_version
 
-pytestmark = pytest.mark.skipif(shutil.which("redis-server") is None, reason="redis-server not installed")
+# Locally a missing redis-server only skips these tests. In CI (CI=true) it must not: a silent skip would hide that
+# the end-to-end tests did not run at all, so there the stack fixture fails loudly instead.
+pytestmark = pytest.mark.skipif(shutil.which("redis-server") is None and not os.environ.get("CI"),
+                                reason="redis-server not installed")
 
 
 @pytest.fixture(scope="module")

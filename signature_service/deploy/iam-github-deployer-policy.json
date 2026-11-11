@@ -13,8 +13,31 @@
         {
             "Sid": "ReadCommandResults",
             "Effect": "Allow",
-            "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+            "Action": [
+                "ssm:GetCommandInvocation",
+                "ssm:ListCommandInvocations"
+            ],
             "Resource": "*"
+        },
+        {
+            "Sid": "EcrLogin",
+            "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Sid": "EcrPushServiceImages",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:PutImage",
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer"
+            ],
+            "Resource": "arn:aws:ecr:ap-southeast-2:433306738386:repository/signatureai"
         }
     ]
 }

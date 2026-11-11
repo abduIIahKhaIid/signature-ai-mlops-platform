@@ -3,6 +3,9 @@ name: CI/CD
 # CI on every push / pull request: tests, static checks, Docker builds.
 # CD on push to main: if signature_service/ changed and CI is green, deploy to EC2 through
 # AWS SSM Run Command (no SSH, no open port 22), then prove the new commit is live via /health.
+# Build once: with the repository variable ECR_REPOSITORY set, the images tested here are pushed to Amazon ECR
+# (tag <service>-<commit>) and EC2 only pulls them. Without it, EC2 builds the images itself (old behaviour).
+# A deploy that does not become healthy is rolled back to the last good commit by remote_deploy.sh.
 on:
   push:
     branches: [main]
@@ -35,8 +38,9 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: signature_service/requirements-*.txt
-      - name: Redis server for the end-to-end tests
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-server
+      - name: Redis server for the end-to-end tests (Docker image, apt only as fallback)
+        timeout-minutes: 12
+        run: bash ../scripts/ci/install-redis.sh
       - name: Install dependencies (CPU-only torch)
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
@@ -93,6 +97,7 @@ jobs:
           bash -n signature_service/deploy/sync_secrets.sh
           bash -n signature_service/deploy/remote_deploy.sh
           bash -n signature_service/deploy/ec2_user_data.sh
+          shellcheck -S warning signature_service/deploy/remote_deploy.sh scripts/ci/install-redis.sh
       - name: train_pipeline.ipynb is up to date with the training notebook
         run: |
           python pipeline/make_pipeline_notebook.py notebooks/01_detection_training_colab.ipynb /tmp/train_pipeline.ipynb
@@ -121,19 +126,107 @@ jobs:
       - name: Workflow files are valid YAML
         run: python -c "import glob, yaml; [yaml.safe_load(open(f)) for f in glob.glob('.github/workflows/*.yml')]; print('ok')"
 
+  mock-pipeline:
+    name: Retraining mock end-to-end (CPU)
+    # The real Kaggle notebook (every cell) and the real EC2 orchestrator, with only the outside world faked:
+    # Hugging Face, S3 (moto), Comet, Kaggle and the GPU. Catches broken retraining before it reaches EC2.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: signature_service/requirements-*.txt
+      - name: Redis server (orchestrator state; Docker image, apt only as fallback)
+        timeout-minutes: 12
+        run: bash scripts/ci/install-redis.sh
+      - name: Install dependencies (CPU-only torch + the notebook's libraries)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install -r signature_service/requirements-dev.txt kaggle ipython pandas matplotlib pyyaml \
+            "torchmetrics[detection]>=1.4" pycocotools scikit-image opencv-python-headless
+      - name: Training notebook, all cells (clean -> train -> gate -> S3 alias)
+        run: python pipeline/mock/run_mock_pipeline.py .
+      - name: Orchestrator scenario (webhook, dedup, stop, gate reject, rollback)
+        env:
+          MOCK_HEADLESS: "1"
+        run: python pipeline/mock/run_mock_orchestrator.py . /tmp/mock_orch_out
+      - name: Keep the logs when it fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mock-pipeline-logs
+          path: |
+            /tmp/mock_e2e/evidence.json
+            /tmp/mock_orch/*.log
+            /tmp/mock_orch/evidence_*.json
+          if-no-files-found: ignore
+
   docker-build:
-    name: Docker images build
+    name: Docker images build (pushed to ECR on main)
     needs: service-tests
     runs-on: ubuntu-latest
+    outputs:
+      ecr_image: ${{ steps.image.outputs.ecr_image }}
+    env:
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+
+      - name: Push the images? (main + ECR_REPOSITORY variable set)
+        id: target
+        env:
+          HAS_KEY: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID != '' && secrets.DEPLOY_AWS_SECRET_ACCESS_KEY != '' && secrets.AWS_REGION != '' }}
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"; echo "not main: build only"; exit 0
+          fi
+          if [ -z "$ECR_REPOSITORY" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Variable ECR_REPOSITORY is not set: images are not pushed and EC2 builds them itself (slow, API down while building). See docs/setup/cicd_github_secrets.md, step 7."
+            exit 0
+          fi
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error::ECR_REPOSITORY is set but DEPLOY_AWS_ACCESS_KEY_ID / DEPLOY_AWS_SECRET_ACCESS_KEY / AWS_REGION are missing."
+            exit 1
+          fi
+          echo "push=true" >> "$GITHUB_OUTPUT"
+
+      - name: AWS credentials (deploy-only IAM user)
+        if: steps.target.outputs.push == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        if: steps.target.outputs.push == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Image name
+        id: image
+        run: |
+          if [ "${{ steps.target.outputs.push }}" = "true" ]; then
+            IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}"
+            echo "ecr_image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          else
+            IMAGE="signatureai"
+          fi
+          echo "name=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "images: ${IMAGE}:{api,worker,pipeline}-${{ github.sha }}"
+
       - name: API image
         uses: docker/build-push-action@v6
         with:
           context: signature_service
           file: signature_service/docker/api.Dockerfile
-          push: false
+          push: ${{ steps.target.outputs.push == 'true' }}
+          tags: ${{ steps.image.outputs.name }}:api-${{ github.sha }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
       - name: Worker image
@@ -141,7 +234,8 @@ jobs:
         with:
           context: signature_service
           file: signature_service/docker/worker.Dockerfile
-          push: false
+          push: ${{ steps.target.outputs.push == 'true' }}
+          tags: ${{ steps.image.outputs.name }}:worker-${{ github.sha }}
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker
       - name: Pipeline (retraining orchestrator) image
@@ -149,13 +243,17 @@ jobs:
         with:
           context: .
           file: signature_service/docker/pipeline.Dockerfile
-          push: false
+          push: ${{ steps.target.outputs.push == 'true' }}
+          tags: ${{ steps.image.outputs.name }}:pipeline-${{ github.sha }}
           cache-from: type=gha,scope=pipeline
           cache-to: type=gha,mode=max,scope=pipeline
+      - name: Summary
+        if: steps.target.outputs.push == 'true'
+        run: echo "### 📦 Pushed \`${{ steps.image.outputs.name }}:{api,worker,pipeline}-${GITHUB_SHA::7}…\` to ECR" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Deploy to EC2 (AWS SSM)
-    needs: [service-tests, dashboard-tests, web-app, pipeline-checks, docker-build]
+    needs: [service-tests, dashboard-tests, web-app, pipeline-checks, mock-pipeline, docker-build]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -163,6 +261,7 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
       API_URL: ${{ vars.API_URL }}
+      ECR_IMAGE: ${{ needs.docker-build.outputs.ecr_image }}   # empty = EC2 builds the images itself
     steps:
       - uses: actions/checkout@v4
         with:
@@ -231,24 +330,31 @@ jobs:
             "set -e",
             "sudo -u ubuntu git -C /home/ubuntu/app fetch --quiet origin main",
             "sudo -u ubuntu git -C /home/ubuntu/app reset --hard ${SHA}",
-            "bash /home/ubuntu/app/signature_service/deploy/remote_deploy.sh ${SHA}"
+            "bash /home/ubuntu/app/signature_service/deploy/remote_deploy.sh ${SHA} ${ECR_IMAGE}"
           ], "executionTimeout": ["2400"]}
           EOF
           CMD_ID="$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
             --comment "deploy ${SHA::7} (run ${{ github.run_id }})" --parameters file:///tmp/params.json \
             --query Command.CommandId --output text)"
           echo "SSM command: $CMD_ID"
-          for i in $(seq 1 240); do
+          for _ in $(seq 1 240); do
             sleep 10
             STATUS="$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
               --query Status --output text 2>/dev/null || echo Pending)"
             echo "$(date +%T) $STATUS"
             case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
           done
-          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-            --query StandardOutputContent --output text | tail -40
-          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
-            --query StandardErrorContent --output text | tail -40
+          OUT="$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text)"
+          ERR="$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text)"
+          echo "$OUT" | tail -40
+          echo "$ERR" | tail -40
+          ROLLED="$(printf '%s\n%s\n' "$OUT" "$ERR" | grep -m1 '^ROLLED_BACK' || true)"
+          if [ -n "$ROLLED" ]; then
+            echo "::error::the new version failed its checks on EC2 and was ROLLED BACK: $ROLLED"
+            echo "### ↩️ Deploy failed, previous version restored: $ROLLED" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "$STATUS" != "Success" ]; then echo "::error::deploy failed on the instance ($STATUS)"; exit 1; fi
 
       - name: Verify from outside (public URL)

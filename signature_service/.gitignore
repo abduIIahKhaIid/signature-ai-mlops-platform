@@ -17,3 +17,4 @@ loadtest/results/
 web/node_modules/
 web/dist/
 app/static/web/
+.deployed_sha
