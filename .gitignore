@@ -40,3 +40,13 @@ keys/
 *.ppk
 id_rsa*
 pipeline-secrets.env
+
+# Local experiment notebooks that are not part of the submission
+notebooks/04_detection_dfine_large_kaggle.ipynb
+
+# AWS setup for a new account: account values, rendered policies, access keys, .pem
+infra/aws/aws.env
+infra/aws/out/
+
+# Local Python environment of the Phase 8/9 Windows scripts
+signature_service/loadtest/.venv/

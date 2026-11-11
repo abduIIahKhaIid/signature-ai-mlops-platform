@@ -1,0 +1,57 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ListModelRegistry",
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": "arn:aws:s3:::__BUCKET__",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": ["signatureai/detection/*", "signatureai/similarity/*"]
+                }
+            }
+        },
+        {
+            "Sid": "ReadModels",
+            "Effect": "Allow",
+            "Action": ["s3:GetObject"],
+            "Resource": [
+                "arn:aws:s3:::__BUCKET__/signatureai/detection/*",
+                "arn:aws:s3:::__BUCKET__/signatureai/similarity/*"
+            ]
+        },
+        {
+            "Sid": "PipelineDashboardActions",
+            "Effect": "Allow",
+            "Action": ["s3:PutObject"],
+            "Resource": [
+                "arn:aws:s3:::__BUCKET__/signatureai/detection/aliases/*",
+                "arn:aws:s3:::__BUCKET__/signatureai/detection/pipeline_runs/control/*",
+                "arn:aws:s3:::__BUCKET__/signatureai/similarity/aliases/*"
+            ]
+        },
+        {
+            "Sid": "EcrLogin",
+            "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Sid": "EcrPullServiceImages",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchCheckLayerAvailability"
+            ],
+            "Resource": "arn:aws:ecr:__REGION__:__ACCOUNT_ID__:repository/__ECR_REPO__"
+        },
+        {
+            "Sid": "ReadProductionDotenv",
+            "Effect": "Allow",
+            "Action": "secretsmanager:GetSecretValue",
+            "Resource": "arn:aws:secretsmanager:__REGION__:__ACCOUNT_ID__:secret:__SECRET_ID__-*"
+        }
+    ]
+}

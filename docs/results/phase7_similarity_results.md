@@ -1,6 +1,6 @@
 # Phase 7 — Signature similarity results
 
-**Notebook:** `notebooks/02_similarity_siamese_kaggle.ipynb` (Kaggle GPU)
+**Notebook:** `notebooks/archive/02_similarity_siamese_cedar_kaggle.ipynb` (Kaggle GPU)
 **Data:** CEDAR (`1aurent/individuality-of-handwriting`), 55 writers × 24 genuine + 24 skilled forgeries.
 **Protocol:** writer-disjoint split (train / validation / test writers never overlap). The decision threshold is the
 validation EER point and is applied once to the unseen test writers.

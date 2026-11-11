@@ -1,0 +1,25 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ListModelRegistry",
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": "arn:aws:s3:::__BUCKET__",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": ["signatureai/detection/*", "signatureai/similarity/*"]
+                }
+            }
+        },
+        {
+            "Sid": "ReadWriteModelsRunsAndAliases",
+            "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:PutObject"],
+            "Resource": [
+                "arn:aws:s3:::__BUCKET__/signatureai/detection/*",
+                "arn:aws:s3:::__BUCKET__/signatureai/similarity/*"
+            ]
+        }
+    ]
+}

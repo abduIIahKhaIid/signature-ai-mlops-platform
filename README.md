@@ -29,6 +29,8 @@ GitHub Actions never trains a model, and the retraining never touches the code.
                            └── Logfire traces: request → queue wait → inference
 ```
 
+![SignatureAI on AWS](docs/architecture/aws/aws_architecture.png)
+
 Diagrams of every flow: [`docs/architecture/`](docs/architecture/README.md).
 
 ## Repository layout
@@ -51,24 +53,35 @@ Diagrams of every flow: [`docs/architecture/`](docs/architecture/README.md).
 │   ├── kaggle_job.py               builds/pushes the Kaggle kernel, creates the Kaggle secrets dataset
 │   └── mock/                       CPU mock tests of the notebook and of the whole orchestrator
 ├── notebooks/                      Research / first training runs
-│   ├── 01_detection_training_colab.ipynb     HF download → cleaning + leakage gate → RT-DETRv2 → Comet → S3
-│   ├── 02_similarity_siamese_kaggle.ipynb    SSIM vs ResNet18 vs Siamese ResNet18 on CEDAR → S3
-│   └── archive/                              earlier versions, kept for history
+│   ├── 01_detection_training_colab.ipynb        HF download → cleaning + leakage gate → RT-DETRv2 → Comet → S3
+│   │                                            (source of pipeline/train_pipeline.ipynb: do not rename)
+│   ├── 03_similarity_same_dataset_kaggle.ipynb  Siamese ResNet18 on the same signature corpus + similarity gate → S3
+│   └── archive/                                 earlier versions, kept for history
+│       ├── 01_detection_training_colab_v1_before_fixes.ipynb
+│       └── 02_similarity_siamese_cedar_kaggle.ipynb (+ .py)   Phase 7: SSIM vs ResNet18 vs Siamese on CEDAR
+├── infra/aws/                      Everything AWS as code: IAM policy templates, trust policy, ECR lifecycle,
+│                                   setup_aws.sh (bucket, ECR, IAM role/users, secret, EC2) for a new account
 ├── dataset_dashboard/              Local dataset review tool (Node.js): import, fix boxes, export, publish ZIP to HF
 ├── START_DASHBOARD.bat             starts the dataset dashboard on Windows
 └── docs/
-    ├── setup/                      how to set things up (CI/CD secrets, EC2, retraining pipeline)
+    ├── PROJECT_STATUS.md           requirement checklist: what is done, what is still open
+    ├── architecture/               diagrams (aws/ = AWS-icon diagrams, the rest = flow diagrams)
+    ├── setup/                      how to set things up (new AWS account, CI/CD secrets, EC2, retraining, promotion)
     ├── results/                    measured results per phase
-    └── images/                     screenshots
+    └── images/                     screenshots (see docs/images/README.md)
 ```
 
 **Not in git (by design):** datasets (`Dataset/`, on Hugging Face), model weights (S3), `.env` files and keys,
-dashboard working data (`.signature-dashboard/`), `node_modules/`.
+`infra/aws/aws.env` and `infra/aws/out/` (account IDs, access keys), dashboard working data (`.signature-dashboard/`),
+`node_modules/`.
 
 ## Documentation
 
 | I want to… | Read |
 |---|---|
+| see what is finished and what is still open | [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) |
+| move the project to **another AWS account** (every IAM user, role, policy, step by step) | [`docs/setup/aws_new_account_setup.md`](docs/setup/aws_new_account_setup.md) |
+| see the system on AWS | [`docs/architecture/aws/aws_architecture.png`](docs/architecture/aws/aws_architecture.png) |
 | make every `git push` deploy to EC2 (GitHub secrets, SSM, IAM) | [`docs/setup/cicd_github_secrets.md`](docs/setup/cicd_github_secrets.md) |
 | create the EC2 server from zero | [`docs/setup/deploy_ec2.md`](docs/setup/deploy_ec2.md) |
 | set up retraining (HF webhook → EC2 → Kaggle) | [`docs/setup/retraining_pipeline.md`](docs/setup/retraining_pipeline.md) |

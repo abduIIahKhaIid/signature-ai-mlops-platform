@@ -1,0 +1,10 @@
+{
+    "rules": [
+        {
+            "rulePriority": 1,
+            "description": "keep the newest 30 images (each deploy pushes 3)",
+            "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 30},
+            "action": {"type": "expire"}
+        }
+    ]
+}
