@@ -1,0 +1,40 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "RunDeployCommandOnTheApiInstanceOnly",
+            "Effect": "Allow",
+            "Action": "ssm:SendCommand",
+            "Resource": [
+                "arn:aws:ec2:__REGION__:__ACCOUNT_ID__:instance/__INSTANCE_ID__",
+                "arn:aws:ssm:__REGION__::document/AWS-RunShellScript"
+            ]
+        },
+        {
+            "Sid": "ReadCommandResults",
+            "Effect": "Allow",
+            "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+            "Resource": "*"
+        },
+        {
+            "Sid": "EcrLogin",
+            "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Sid": "EcrPushServiceImages",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:PutImage",
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer"
+            ],
+            "Resource": "arn:aws:ecr:__REGION__:__ACCOUNT_ID__:repository/__ECR_REPO__"
+        }
+    ]
+}

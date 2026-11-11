@@ -72,7 +72,7 @@ class Settings:
     # /v1/detect: with 2+ signatures on a page, compare every pair of the top N crops with the similarity model
     compare_max_signatures: int = field(default_factory=lambda: _int("COMPARE_MAX_SIGNATURES", 10))
     similarity_match_threshold: float = field(default_factory=lambda: _float("SIMILARITY_MATCH_THRESHOLD", 0.80))
-    # Siamese weights from S3 (written by notebooks/02_similarity_siamese_kaggle.ipynb): alias "latest" -> versions/<v>/siamese_resnet18.pt.
+    # Siamese weights from S3 (written by notebooks/03_similarity_same_dataset_kaggle.ipynb): alias "latest" -> versions/<v>/siamese_resnet18.pt.
     # When set, the alias' validated threshold replaces SIMILARITY_MATCH_THRESHOLD.
     similarity_s3_alias: str | None = field(default_factory=lambda: os.getenv("SIMILARITY_S3_ALIAS") or None)
     similarity_s3_prefix: str = field(default_factory=lambda: os.getenv("SIMILARITY_S3_PREFIX", "signatureai/similarity"))

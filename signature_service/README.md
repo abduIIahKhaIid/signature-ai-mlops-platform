@@ -2,7 +2,8 @@
 
 FastAPI + Redis + Celery service that serves the RT-DETRv2 signature detector trained in
 `notebooks/01_detection_training_colab.ipynb` (and retrained by `pipeline/`), plus a signature similarity
-endpoint (Siamese ResNet18 from `notebooks/02_similarity_siamese_kaggle.ipynb`). No Ultralytics code: RT-DETRv2 via Hugging Face `transformers` (Apache-2.0),
+endpoint (Siamese ResNet18 from `notebooks/03_similarity_same_dataset_kaggle.ipynb`; first CEDAR version:
+`notebooks/archive/02_similarity_siamese_cedar_kaggle.ipynb`). No Ultralytics code: RT-DETRv2 via Hugging Face `transformers` (Apache-2.0),
 ResNet18 via `torchvision` (BSD-3).
 
 ```

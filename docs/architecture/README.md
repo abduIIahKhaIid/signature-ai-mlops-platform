@@ -1,6 +1,26 @@
 # Architecture diagrams
 
-Drawn from the code at commit `f804f75` (`signature_service/`, `pipeline/`, `.github/workflows/ci-cd.yml`).
+## AWS diagrams (official AWS icons)
+| Diagram | Shows |
+|---|---|
+| [`aws/aws_architecture.png`](aws/aws_architecture.png) ([SVG](aws/aws_architecture.svg)) | the whole system on AWS: VPC, security group, EC2 + 4 containers, S3, ECR, Secrets Manager, SSM, IAM role, and the outside services |
+| [`aws/aws_iam_access.png`](aws/aws_iam_access.png) | which identity (EC2 role, GitHub deploy user, notebook user) may do what on which AWS resource |
+| [`aws/aws_flows.png`](aws/aws_flows.png) | the two automated flows: continuous training and code deploy |
+
+![SignatureAI on AWS](aws/aws_architecture.png)
+![IAM access](aws/aws_iam_access.png)
+![Automated flows](aws/aws_flows.png)
+
+Regenerate (needs `pip install diagrams` and Graphviz; the PNG of the main diagram needs `rsvg-convert`):
+```bash
+python docs/architecture/src/make_icons.py          # generic icons for Hugging Face / Kaggle / Comet / Logfire (no brand logos)
+python docs/architecture/src/aws_architecture_svg.py # aws/aws_architecture.svg + .png (fixed layout, edit NODES / EDGES)
+python docs/architecture/src/aws_diagrams.py         # aws/aws_iam_access.png, aws/aws_flows.png
+```
+
+## Flow diagrams
+
+Drawn from the code at commit `f804f75` (before ECR, Secrets Manager and the `production` alias; those are in the AWS diagrams above and in [`../setup/model_promotion.md`](../setup/model_promotion.md)) (`signature_service/`, `pipeline/`, `.github/workflows/ci-cd.yml`).
 Times are the defaults in `signature_service/.env.example`. Each picture has an SVG version in [`svg/`](svg/).
 
 Two flows change the system: **CI/CD** changes the code, **continuous training** changes the model.
