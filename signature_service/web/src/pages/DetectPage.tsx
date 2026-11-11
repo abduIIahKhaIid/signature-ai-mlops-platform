@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Download, FileJson, RotateCcw, Upload } from "lucide-react";
-import { ApiError, detectForm, runJob, type DetectResult, type Detection, type JobTrace } from "../lib/api";
+import { Link } from "react-router-dom";
+import { ArrowLeftRight, Download, FileJson, RotateCcw, Upload } from "lucide-react";
+import { ApiError, detectForm, runJob, type DetectResult, type DetectSimilarity, type Detection, type JobTrace } from "../lib/api";
 import { useObjectUrl } from "../lib/hooks";
 import { bytes, confidenceBand, ms, versionDate } from "../lib/format";
 import { Dropzone } from "../components/Dropzone";
@@ -54,6 +55,85 @@ function save(blob: Blob, filename: string) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/** Pairs of signatures on this page, compared by the similarity model (the same Siamese ResNet18 as the Verify page). */
+function PairsPanel({
+  similarity, shownCount, src, result, previewBroken, onActive,
+}: {
+  similarity: DetectSimilarity;
+  shownCount: number;
+  src: string;
+  result: DetectResult;
+  previewBroken: boolean;
+  onActive: (i: number | null) => void;
+}) {
+  if (!similarity.available) {
+    return (
+      <div className="p-5">
+        <h3 className="text-[17px] font-semibold">Do these signatures match each other?</h3>
+        <p className="mt-1 text-[14px] text-ink-soft">The comparison is not available on this server: {similarity.reason}</p>
+      </div>
+    );
+  }
+  // detections are sorted by confidence, so the boxes above the slider are indexes 0 .. shownCount-1
+  const pairs = (similarity.pairs ?? []).filter((p) => p.a < shownCount && p.b < shownCount);
+  if (pairs.length === 0) return null;
+  const threshold = similarity.threshold ?? 0.8;
+  const matches = pairs.filter((p) => p.match).length;
+  const best = pairs[0];
+  const model = similarity.model === "resnet18-finetuned" ? "Siamese ResNet18" : similarity.model;
+  return (
+    <div className="p-5">
+      <h3 className="text-[17px] font-semibold">Do these signatures match each other?</h3>
+      <p className="mt-1 text-[14px] text-ink-soft">
+        {matches === 0
+          ? `No two signatures on this page look like the same writer. Closest pair: Signature ${best.a + 1} and ${best.b + 1} at ${best.score_percent.toFixed(1)}%.`
+          : matches === 1
+            ? `Signature ${best.a + 1} and Signature ${best.b + 1} look like the same writer (${best.score_percent.toFixed(1)}%).`
+            : `${matches} pairs look like the same writer. The closest: Signature ${best.a + 1} and ${best.b + 1} (${best.score_percent.toFixed(1)}%).`}
+      </p>
+      <ul className="mt-3 max-h-[340px] space-y-2 overflow-y-auto pr-1" aria-label="Similarity of each pair of signatures">
+        {pairs.map((p) => {
+          const da = result.detections[p.a];
+          const db = result.detections[p.b];
+          return (
+            <li
+              key={`${p.a}-${p.b}`}
+              tabIndex={0}
+              onMouseEnter={() => onActive(p.a)}
+              onMouseLeave={() => onActive(null)}
+              onFocus={() => onActive(p.a)}
+              onBlur={() => onActive(null)}
+              className={`rounded-lg border p-2.5 ${p.match ? "border-verified/30 bg-verified-soft" : "border-desk-line bg-paper"}`}
+            >
+              <div className="flex items-center gap-2">
+                {!previewBroken && <CropThumb src={src} box={da.box_xyxy} imageSize={result.image_size} alt={`Signature ${p.a + 1}`} maxW={82} maxH={44} />}
+                <ArrowLeftRight className="h-4 w-4 shrink-0 text-ink-faint" aria-hidden />
+                {!previewBroken && <CropThumb src={src} box={db.box_xyxy} imageSize={result.image_size} alt={`Signature ${p.b + 1}`} maxW={82} maxH={44} />}
+                <span className="ml-auto text-right">
+                  <span className="block font-display text-[22px] font-bold leading-none tnum">{p.score_percent.toFixed(1)}%</span>
+                  <span className={`text-[12px] font-bold ${p.match ? "text-verified" : "text-ink-faint"}`}>{p.match ? "Same writer" : "Different"}</span>
+                </span>
+              </div>
+              <div className="mt-1.5 text-[13px] text-ink-soft">Signature {p.a + 1} and Signature {p.b + 1}</div>
+              <div className="relative mt-1 h-1.5 rounded-full bg-desk" aria-hidden>
+                <div className={`h-full rounded-full ${p.match ? "bg-verified" : "bg-ink-faint"}`} style={{ width: `${Math.max(0, Math.min(1, p.similarity)) * 100}%` }} />
+                <div className="absolute -top-1 h-3.5 w-[2px] bg-ink-soft" style={{ left: `${threshold * 100}%` }} />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 text-[13px] text-ink-faint">
+        {similarity.note ?? model} Match line at {(threshold * 100).toFixed(1)}%.
+        {similarity.compared && similarity.detected && similarity.compared < similarity.detected
+          ? ` Only the ${similarity.compared} most confident of ${similarity.detected} boxes were compared.`
+          : ""}{" "}
+        To check one signature against a known genuine one, use the <Link to="/verify" className="font-semibold text-signal underline underline-offset-4">Verify page</Link>.
+      </p>
+    </div>
+  );
 }
 
 export default function DetectPage() {
@@ -259,6 +339,10 @@ export default function DetectPage() {
           </ul>
         )}
 
+        {phase === "done" && result?.similarity && shown.length >= 2 && (
+          <PairsPanel similarity={result.similarity} shownCount={shown.length} src={src} result={result} previewBroken={previewBroken} onActive={setActive} />
+        )}
+
         {trace && (
           <div className="p-5">
             <h3 className="mb-3 text-[17px] font-semibold">How this request ran</h3>
@@ -274,6 +358,12 @@ export default function DetectPage() {
                   process {result.worker_pid}
                   {result.retries ? `, ${result.retries} retr${result.retries > 1 ? "ies" : "y"}` : ""}
                 </dd>
+                {result.timings_ms.similarity != null && (
+                  <>
+                    <dt className="text-ink-faint">Pair comparison</dt>
+                    <dd className="tnum">{ms(result.timings_ms.similarity)}</dd>
+                  </>
+                )}
                 <dt className="text-ink-faint">Time on worker</dt>
                 <dd className="tnum">{ms(result.timings_ms.total_worker)}</dd>
               </dl>

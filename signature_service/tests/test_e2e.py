@@ -90,6 +90,25 @@ def test_detect_sync(stack):
     assert list((TMP / "uploads").iterdir()) == []  # upload deleted after processing
 
 
+def test_detect_compares_every_pair_of_signatures(stack):
+    r = stack["client"].post("/v1/detect?wait=true&threshold=0.0", files={"file": _png(2)})
+    result = r.json()["result"]
+    n = min(len(result["detections"]), 10)            # COMPARE_MAX_SIGNATURES default
+    assert n >= 2, "the random test model should return several boxes at threshold 0"
+    sim = result["similarity"]
+    assert sim["available"] and sim["compared"] == n and len(sim["pairs"]) == n * (n - 1) // 2
+    assert {(p["a"], p["b"]) for p in sim["pairs"]} == {(a, b) for a in range(n) for b in range(a + 1, n)}
+    assert all(-1.0 <= p["similarity"] <= 1.0 and p["match"] == (p["similarity"] >= sim["threshold"]) for p in sim["pairs"])
+    assert [p["similarity"] for p in sim["pairs"]] == sorted((p["similarity"] for p in sim["pairs"]), reverse=True)
+    assert result["timings_ms"]["similarity"] is not None
+
+
+def test_detect_without_compare(stack):
+    r = stack["client"].post("/v1/detect?wait=true&threshold=0.0&compare=false", files={"file": _png(3)})
+    result = r.json()["result"]
+    assert result["similarity"] is None and result["timings_ms"]["similarity"] is None
+
+
 def test_detect_async_then_poll(stack):
     client = stack["client"]
     r = client.post("/v1/detect", files={"file": _png(1)})

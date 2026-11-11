@@ -8,12 +8,35 @@ export interface Detection {
   box_xyxy: [number, number, number, number];
 }
 
+/** One pair of signatures found on the same page, compared by the similarity model. a / b index `detections`. */
+export interface SignaturePair {
+  a: number;
+  b: number;
+  similarity: number;
+  score_percent: number;
+  match: boolean;
+}
+
+export interface DetectSimilarity {
+  available: boolean;
+  reason?: string;
+  model?: string;
+  version?: string | null;
+  threshold?: number;
+  compared?: number;
+  detected?: number;
+  pairs?: SignaturePair[];
+  note?: string;
+}
+
 export interface DetectResult {
   model_version: string;
   image_size: { width: number; height: number };
   signature_count: number;
   detections: Detection[];
-  timings_ms: { queue_wait: number | null; inference: number; total_worker: number };
+  /** Present when the page has 2+ signatures (and compare was not turned off). */
+  similarity?: DetectSimilarity | null;
+  timings_ms: { queue_wait: number | null; inference: number; similarity?: number | null; total_worker: number };
   retries: number;
   worker_pid: number;
 }

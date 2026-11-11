@@ -99,12 +99,14 @@ async def detect(
     wait: Annotated[bool, Query(description="Wait for the result instead of only returning a job id")] = False,
     timeout: Annotated[float, Query(gt=0, le=120)] = 20,
     threshold: Annotated[float | None, Query(ge=0, le=1)] = None,
+    compare: Annotated[bool, Query(description="With 2+ signatures: similarity of every pair (Siamese ResNet18)")] = True,
     simulate_failures: SimulateFailures = 0,
 ):
     _check_simulation(simulate_failures)
     key = await _store_upload(file)
     result = celery_app.send_task(DETECT_TASK, args=[key, threshold],
-                                  kwargs={"enqueued_at": time.time(), "simulate_failures": simulate_failures})
+                                  kwargs={"enqueued_at": time.time(), "simulate_failures": simulate_failures,
+                                          "compare": compare})
     return await _respond(result, wait, timeout)
 
 

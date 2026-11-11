@@ -128,3 +128,11 @@ class SignatureEmbedder:
 
     def similarity(self, a: Image.Image, b: Image.Image) -> float:
         return float(torch.dot(self.embed(a), self.embed(b)))
+
+    @torch.inference_mode()
+    def embed_many(self, images: list[Image.Image]) -> torch.Tensor:
+        """L2-normalised embeddings of several crops in one forward pass (rows follow the input order)."""
+        if not images:
+            return torch.empty(0, 512)
+        batch = torch.cat([self._preprocess(image) for image in images])
+        return torch.nn.functional.normalize(self.model(batch), dim=1)
