@@ -133,6 +133,10 @@ Even without any webhook, the fallback poll (`PIPELINE_POLL_MINUTES=30`) finds n
   *Retraining is blocked* (with the reason), *Training is busy*, *No dataset ZIP*. The 30-minute fallback poll only
   reports a start, and the same blocked/error message at most once every 6 hours. Easiest channel: a Discord
   webhook in `ALERT_WEBHOOK_URL` (free phone notifications).
+* **Trigger history**: the same decisions, kept for the last 500 uploads (Redis volume, survives deploys), as a table
+  with filters (All / Training started / Skipped / Problems): time, trigger (HF webhook, Dashboard, re-check),
+  dataset ZIP and content hash, outcome, the model it was trained into before, a link to the run, and which alert
+  channels were notified. Also as JSON: `GET /v1/pipeline/triggers?limit=500`.
 * Also shown: estimated finish time (median step times of earlier runs), Kaggle GPU quota, dataset diff against the
   last trained dataset, model lineage, decision table, admin audit in the event log, and run comparison.
 * Results: Comet experiment, S3 `versions/<v>/`, `pipeline_runs/<v>.json`, and `GET /v1/model` showing the new version.

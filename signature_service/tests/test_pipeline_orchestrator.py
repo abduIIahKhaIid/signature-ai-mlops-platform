@@ -514,3 +514,29 @@ def test_trigger_alerts_have_their_own_toggle_and_never_break_the_check(env):
     env.orch.notifier = Broken()
     env.hf.upload("a.zip", SHA_A, "commit-a")
     assert env.orch.request_check("webhook")["decision"] == "started"     # the alert failed, the run did not
+
+
+def test_trigger_history_keeps_what_each_upload_led_to(env):
+    env.orch.notifier = RecordingNotifier()
+    env.s3.put_object(Bucket=BUCKET, Key=f"{PREFIX}/pipeline_runs/datasets/{SHA_B}.json",
+                      Body=json.dumps({"version": "v-b", "status": "deployed"}))
+    env.hf.upload("b.zip", SHA_B, "commit-b")
+    env.orch.request_check("webhook", hf_sha="commit-b")                  # same dataset -> skipped
+    env.orch.request_check("schedule")                                    # poll, nothing new -> not in the history
+    env.hf.upload("a.zip", SHA_A, "commit-a")
+    run_id = env.orch.request_check("manual")["run_id"]                   # dashboard "Check now" -> started
+
+    history = dashboard_state(env.store, env.cfg)["triggers"]
+    assert [(t["source"], t["decision"]) for t in history] == [("manual", "started"), ("webhook", "skipped_trained")]
+    started, skipped = history
+    assert started["run_id"] == run_id and started["zip"] == "a.zip" and started["alerts"] == ["slack"]
+    assert skipped["trained_version"] == "v-b" and skipped["fingerprint"] == SHA_B and skipped["hf_sha"] == "commit-b"
+    assert skipped["title"] == "Dataset already trained, no training started"
+    json.dumps(history, allow_nan=False)
+
+
+def test_trigger_history_is_rebuilt_from_the_decision_log_before_the_first_record(env):
+    env.store.decide("skipped_trained", "same content", source="webhook", zip="old.zip", fingerprint=SHA_B)
+    env.store.decide("skipped_trained", "poll", source="schedule", zip="old.zip")
+    history = R.trigger_history(env.store)
+    assert len(history) == 1 and history[0]["zip"] == "old.zip" and history[0]["alerts"] == []

@@ -143,6 +143,18 @@ class PipelineStore:
     def decisions(self, limit: int = 30) -> list[dict]:
         return [json.loads(x) for x in self.r.lrange("pipeline:decisions", 0, limit - 1)]
 
+    # trigger history: one record per check a person caused (HF webhook, dashboard button, re-check after a run),
+    # plus scheduled checks that started a run or hit a problem. The raw decision log above also holds every
+    # 30-minute poll and keeps only 100 entries (~2 days); this list keeps the last TRIGGER_HISTORY uploads.
+    TRIGGER_HISTORY = 500
+
+    def add_trigger(self, record: dict) -> None:
+        self.r.lpush("pipeline:triggers", json.dumps(json_safe(record), default=str))
+        self.r.ltrim("pipeline:triggers", 0, self.TRIGGER_HISTORY - 1)
+
+    def triggers(self, limit: int = 50) -> list[dict]:
+        return [json.loads(x) for x in self.r.lrange("pipeline:triggers", 0, max(1, limit) - 1)]
+
     # misc
     def get_json(self, key: str):
         return self._get(f"pipeline:{key}")
@@ -400,6 +412,25 @@ def trigger_text(entry: dict, cfg) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
+def trigger_record(entry: dict, alerts: list[str] | None) -> dict:
+    """One row of the dashboard's trigger history."""
+    marker = entry.get("marker") or {}
+    return {"ts": entry.get("ts") or utcnow(), "source": entry.get("source"), "decision": entry.get("decision"),
+            "title": TRIGGER_TITLES.get(entry.get("decision"), entry.get("decision")), "message": entry.get("message"),
+            "hf_sha": entry.get("hf_sha"), "zip": entry.get("zip"), "fingerprint": entry.get("fingerprint"),
+            "run_id": entry.get("run_id"), "trained_version": marker.get("version"), "trained_status": marker.get("status"),
+            "alerts": list(alerts or [])}
+
+
+def trigger_history(store: PipelineStore, limit: int = 50) -> list[dict]:
+    """Trigger history, newest first. Before the first recorded trigger it is rebuilt from the decision log."""
+    saved = store.triggers(limit)
+    if saved:
+        return saved
+    return [trigger_record(d, None) for d in store.decisions(100)
+            if d.get("decision") in TRIGGER_TITLES and d.get("source") != "schedule"][:limit]
+
+
 class Orchestrator:
     def __init__(self, settings, store: PipelineStore, s3, hf: HfInspector, kaggle: KaggleCLI,
                  probe: Callable[[], dict | None], clock: Callable[[], float] = time.time, comet=None, notifier=None):
@@ -522,23 +553,29 @@ class Orchestrator:
     def _decide(self, decision: str, message: str, **extra) -> dict:
         entry = self.store.decide(decision, message, **extra)
         try:
-            self.trigger_alert(entry)
-        except Exception as exc:  # an alert must never change what the pipeline does
-            log.warning("trigger alert failed: %s", exc)
+            if self.reportable(entry):
+                alerts = self.trigger_alert(entry)
+                self.store.add_trigger(trigger_record(entry, alerts))
+        except Exception as exc:  # an alert or the history must never change what the pipeline does
+            log.warning("trigger alert / history failed: %s", exc)
         return entry
 
-    def trigger_alert(self, entry: dict) -> list[str]:
+    def reportable(self, entry: dict) -> bool:
+        """Does this decision go to the alert channels and the trigger history?"""
         decision, source = entry.get("decision"), entry.get("source") or "?"
-        if not self.notifier or decision not in TRIGGER_TITLES:
+        if decision not in TRIGGER_TITLES:
+            return False
+        if source != "schedule" or decision == "started":
+            return True
+        if decision in ("blocked", "error"):  # a lasting problem: once per TRIGGER_REPEAT_SECONDS
+            digest = hashlib.sha1(f"{decision}|{entry.get('message')}".encode()).hexdigest()[:16]
+            return bool(self.store.r.set(f"pipeline:trigger_alerted:{digest}", 1, nx=True, ex=self.TRIGGER_REPEAT_SECONDS))
+        return False  # the poll found nothing new
+
+    def trigger_alert(self, entry: dict) -> list[str]:
+        if not self.notifier:
             return []
-        if source == "schedule":
-            if decision in ("blocked", "error"):
-                digest = hashlib.sha1(f"{decision}|{entry.get('message')}".encode()).hexdigest()[:16]
-                if not self.store.r.set(f"pipeline:trigger_alerted:{digest}", 1, nx=True, ex=self.TRIGGER_REPEAT_SECONDS):
-                    return []
-            elif decision != "started":
-                return []
-        subject = TRIGGER_TITLES[decision] + (f": {entry['zip']}" if entry.get("zip") else "")
+        subject = TRIGGER_TITLES[entry["decision"]] + (f": {entry['zip']}" if entry.get("zip") else "")
         return self.notifier.send("trigger", subject, trigger_text(entry, self.cfg))
 
     # ---------------------------------------------------------------- Comet + secrets
@@ -1090,6 +1127,7 @@ def dashboard_state(store: PipelineStore, cfg, run_id: str | None = None) -> dic
         "lineage": build_lineage(runs, serving_version, run),
         "runs": [run_summary(r) for r in runs],
         "decisions": store.decisions(30),
+        "triggers": trigger_history(store, 50),
         "audit": store.audit_log(30),
         "serving": serving,
         "rollback_to": (serving.get("alias") or {}).get("previous_version"),

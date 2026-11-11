@@ -46,6 +46,16 @@ async def pipeline_state(run_id: str | None = Query(default=None, max_length=64)
         raise HTTPException(503, f"pipeline state unavailable: {exc}") from exc
 
 
+@router.get("/v1/pipeline/triggers", summary="Trigger history: what each dataset upload / webhook / button press led to")
+async def pipeline_triggers(limit: int = Query(default=100, ge=1, le=500)):
+    from .retrain import trigger_history
+
+    try:
+        return {"triggers": await run_in_threadpool(trigger_history, _store(), limit)}
+    except Exception as exc:
+        raise HTTPException(503, f"trigger history unavailable: {exc}") from exc
+
+
 def _require_admin(token: str | None) -> None:
     if not settings.pipeline_admin_token:
         raise HTTPException(503, "PIPELINE_ADMIN_TOKEN is not set on the server")

@@ -150,6 +150,17 @@ export interface AuditEntry { ts: string; action: string; detail: string; who: s
 
 export interface Decision { ts: string; decision: string; message: string; source?: string; run_id?: string }
 
+/** One row of the trigger history: what a dataset upload / webhook / button press led to. */
+export interface TriggerRecord {
+  ts: string; source?: string; decision: string; title?: string; message: string;
+  hf_sha?: string | null; zip?: string | null; fingerprint?: string | null; run_id?: string | null;
+  trained_version?: string | null; trained_status?: string | null; alerts?: string[];
+}
+
+export const TRIGGER_SOURCE: Record<string, string> = {
+  webhook: "HF webhook", manual: "Dashboard", pending: "Re-check after run", schedule: "Scheduled check",
+};
+
 export interface PipelineState {
   server_time: string;
   phases: PhaseDef[];
@@ -172,6 +183,7 @@ export interface PipelineState {
   run: Run | null;
   runs: RunSummary[];
   decisions: Decision[];
+  triggers?: TriggerRecord[];
   serving: { worker?: { detector_version?: string }; worker_error?: string; alias?: { version?: string; previous_version?: string; stage?: string }; alias_name?: string; checked_at?: string } | null;
   last_check: { ts: string; source: string; commit: string; zips: { path: string }[]; url: string } | null;
   pending_recheck: boolean;
