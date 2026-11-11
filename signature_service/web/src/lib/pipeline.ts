@@ -166,7 +166,7 @@ export interface PipelineState {
   rollback_to?: string | null;
   kaggle_quota?: { used_hours?: number; total_hours?: number; remaining_hours?: number; refresh_at?: string | null; error?: string } | null;
   training?: TrainingSettings;
-  alerts?: { channels: { email: boolean; slack: boolean }; prefs: { email: boolean; slack: boolean; stuck: boolean } };
+  alerts?: { channels: { email: boolean; slack: boolean }; prefs: { email: boolean; slack: boolean; stuck: boolean; trigger?: boolean } };
   last_webhook_at?: string | null;
   active_run_id: string | null;
   run: Run | null;

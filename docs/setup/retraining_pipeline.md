@@ -127,6 +127,12 @@ Even without any webhook, the fallback poll (`PIPELINE_POLL_MINUTES=30`) finds n
   the charts while the model trains and moves to the bottom of the page after training.
 * **Alerts**: email on deploy / reject / fail / stop, Slack or Discord on deploy / fail / stop, and a stuck-run alert
   when no heartbeat arrives for `PIPELINE_STUCK_MINUTES`.
+* **Upload answers** (toggle "trigger", on by default): every HF webhook, *Check now* and post-run re-check ends in
+  one message on every configured channel, about a minute after the upload: *Training started*, *Dataset already
+  trained, no training started* (same SHA-256 as an earlier upload, with the model it was trained into),
+  *Retraining is blocked* (with the reason), *Training is busy*, *No dataset ZIP*. The 30-minute fallback poll only
+  reports a start, and the same blocked/error message at most once every 6 hours. Easiest channel: a Discord
+  webhook in `ALERT_WEBHOOK_URL` (free phone notifications).
 * Also shown: estimated finish time (median step times of earlier runs), Kaggle GPU quota, dataset diff against the
   last trained dataset, model lineage, decision table, admin audit in the event log, and run comparison.
 * Results: Comet experiment, S3 `versions/<v>/`, `pipeline_runs/<v>.json`, and `GET /v1/model` showing the new version.

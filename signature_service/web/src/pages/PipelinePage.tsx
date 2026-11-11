@@ -901,6 +901,7 @@ function AlertsCard({ state, admin }: { state: PipelineState; admin: ReturnType<
     ["email", "Email me when a run finishes, fails or is stopped", a.channels.email],
     ["slack", "Slack / Discord message on deploy or failure", a.channels.slack],
     ["stuck", "Alert if a run is stuck (no heartbeat for 10 min)", a.channels.email || a.channels.slack],
+    ["trigger", "Tell me what every dataset upload / webhook did (training started, same dataset skipped, blocked)", a.channels.email || a.channels.slack],
   ];
   return (
     <Section title="Alerts" id="alerts">
@@ -911,7 +912,7 @@ function AlertsCard({ state, admin }: { state: PipelineState; admin: ReturnType<
               {label}
               {!available && <span className="block text-[12px]">{k === "slack" ? "Set ALERT_WEBHOOK_URL in the server .env" : "Set SMTP_* and ALERT_EMAIL_TO in the server .env"}</span>}
             </span>
-            <Toggle on={a.prefs[k] && available} label={label} disabled={!available || !state.config.admin_enabled} onChange={(v) => admin.request({ kind: "alerts", body: { [k]: v } })} />
+            <Toggle on={(a.prefs[k] ?? true) && available} label={label} disabled={!available || !state.config.admin_enabled} onChange={(v) => admin.request({ kind: "alerts", body: { [k]: v } })} />
           </li>
         ))}
       </ul>

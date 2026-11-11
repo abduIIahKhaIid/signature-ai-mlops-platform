@@ -78,6 +78,7 @@ class AlertPrefs(BaseModel):
     email: bool | None = None
     slack: bool | None = None
     stuck: bool | None = None
+    trigger: bool | None = None
 
 
 class TrainingSettings(BaseModel):
